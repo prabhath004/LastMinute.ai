@@ -8,3 +8,5 @@ pillow
 pytesseract
 langgraph
 google-generativeai
+google-genai
+langsmith

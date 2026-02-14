@@ -76,6 +76,7 @@ export function VercelV0Chat() {
       storyText: string;
       llmUsed: boolean;
       llmStatus: string;
+      traceNodes: string[];
       concepts: string[];
       checklist: string[];
       storyTitle: string;
@@ -142,6 +143,7 @@ export function VercelV0Chat() {
             final_storytelling?: string;
             llm_used?: boolean;
             llm_status?: string;
+            pipeline_trace?: Array<{ node?: string }>;
           };
           return { file, ok: response.ok, data };
         })
@@ -163,6 +165,9 @@ export function VercelV0Chat() {
           storyText: r.data.final_storytelling ?? "",
           llmUsed: Boolean(r.data.llm_used),
           llmStatus: r.data.llm_status ?? "",
+          traceNodes: (r.data.pipeline_trace ?? [])
+            .map((step) => step.node ?? "")
+            .filter((node): node is string => Boolean(node)),
           concepts: r.data.concepts ?? [],
           checklist: r.data.checklist ?? [],
           storyTitle: r.data.interactive_story?.title ?? "LastMinute Mission",
@@ -335,6 +340,11 @@ export function VercelV0Chat() {
                 {!item.llmUsed && item.llmStatus ? (
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     Reason: {item.llmStatus}
+                  </p>
+                ) : null}
+                {item.traceNodes.length > 0 ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Trace: {item.traceNodes.join(" -> ")}
                   </p>
                 ) : null}
                 {item.storyText ? (

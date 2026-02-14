@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11.6"
 dependencies = [
+    "google-genai>=1.63.0",
     "google-generativeai>=0.8.5",
     "langgraph>=0.6.7",
+    "langsmith>=0.7.3",
     "pdfplumber>=0.11.9",
     "pillow>=12.1.1",
     "pytesseract>=0.3.13",

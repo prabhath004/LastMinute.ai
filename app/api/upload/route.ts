@@ -19,6 +19,7 @@ interface LoaderResult {
   finalStorytelling: string;
   llmUsed: boolean;
   llmStatus: string;
+  pipelineTrace: Array<Record<string, unknown>>;
 }
 
 function parseLastJsonLine(stdout: string): Record<string, unknown> {
@@ -52,11 +53,13 @@ async function loadWithPython(filePath: string): Promise<LoaderResult> {
   const pythonCommand = await resolvePythonCommand();
   const script = `
 import json
+import os
 import sys
 from agents.loaders.loader_factory import get_loader
 
 path = sys.argv[1]
 try:
+    debug_mode = os.getenv("LASTMINUTE_DEBUG_PIPELINE", "").strip().lower() in ("1", "true", "yes")
     text = get_loader(path).load(path)
     learning_event = {}
     concepts = []
@@ -65,9 +68,14 @@ try:
     final_storytelling = ""
     llm_used = False
     llm_status = ""
+    pipeline_trace = []
     try:
-        from pipeline_graph import run_pipeline
-        pipeline_state = run_pipeline([path], extracted_text=text)
+        if debug_mode:
+            from pipeline_graph import run_pipeline_with_trace
+            pipeline_state, pipeline_trace = run_pipeline_with_trace([path], extracted_text=text)
+        else:
+            from pipeline_graph import run_pipeline
+            pipeline_state = run_pipeline([path], extracted_text=text)
         learning_event = pipeline_state.get("learning_event", {})
         concepts = pipeline_state.get("priority_concepts", [])
         checklist = pipeline_state.get("todo_checklist", [])
@@ -120,7 +128,8 @@ Teach the chapter in simple words from memory."""
         "interactive_story": interactive_story,
         "final_storytelling": final_storytelling,
         "llm_used": llm_used,
-        "llm_status": llm_status
+        "llm_status": llm_status,
+        "pipeline_trace": pipeline_trace
     }))
 except Exception as error:
     print(json.dumps({"ok": False, "error": str(error)}))
@@ -169,6 +178,9 @@ except Exception as error:
             finalStorytelling: String(payload.final_storytelling ?? ""),
             llmUsed: Boolean(payload.llm_used ?? false),
             llmStatus: String(payload.llm_status ?? ""),
+            pipelineTrace: Array.isArray(payload.pipeline_trace)
+              ? (payload.pipeline_trace as Array<Record<string, unknown>>)
+              : [],
           });
           return;
         }
@@ -217,6 +229,7 @@ export async function POST(request: Request) {
       final_storytelling: result.finalStorytelling,
       llm_used: result.llmUsed,
       llm_status: result.llmStatus,
+      pipeline_trace: result.pipelineTrace,
       status: "processed",
     });
   } catch (error) {

@@ -13,6 +13,14 @@ try:
 except Exception:
     genai = None
 
+try:
+    from langsmith import traceable
+except Exception:
+    def traceable(*_args, **_kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 
 class PipelineState(TypedDict):
     raw_files: list
@@ -100,6 +108,7 @@ def _parse_json(text: str) -> dict[str, Any]:
         return {}
 
 
+@traceable(run_type="llm", name="gemini_json_call")
 def _llm_json(system_prompt: str, user_prompt: str) -> tuple[dict[str, Any], str]:
     client, status = _llm_client()
     if client is None:
@@ -121,11 +130,13 @@ def _llm_json(system_prompt: str, user_prompt: str) -> tuple[dict[str, Any], str
         return {}, f"gemini request failed: {error}"
 
 
+@traceable(run_type="chain", name="store_raw_files")
 def store_raw_files(state: PipelineState) -> PipelineState:
     stored = [f"stored::{name}" for name in state.get("raw_files", [])]
     return {**state, "raw_files": stored}
 
 
+@traceable(run_type="chain", name="extract_text")
 def extract_text(state: PipelineState) -> PipelineState:
     existing_text = state.get("extracted_text", "").strip()
     if existing_text:
@@ -138,12 +149,14 @@ def extract_text(state: PipelineState) -> PipelineState:
     return {**state, "extracted_text": combined}
 
 
+@traceable(run_type="chain", name="clean_text")
 def clean_text(state: PipelineState) -> PipelineState:
     text = state.get("extracted_text", "")
     cleaned = normalize_text(text)
     return {**state, "cleaned_text": cleaned}
 
 
+@traceable(run_type="chain", name="chunk_text")
 def chunk_text(state: PipelineState) -> PipelineState:
     text = state.get("cleaned_text", "")
     if not text:
@@ -169,6 +182,7 @@ def chunk_text(state: PipelineState) -> PipelineState:
     return {**state, "chunks": chunks}
 
 
+@traceable(run_type="chain", name="concept_extraction")
 def concept_extraction(state: PipelineState) -> PipelineState:
     text = state.get("cleaned_text", "")
     llm_result, llm_status = _llm_json(
@@ -177,10 +191,22 @@ def concept_extraction(state: PipelineState) -> PipelineState:
             "Return valid JSON only."
         ),
         user_prompt=(
-            "Extract 8-12 study concepts that are useful for understanding and exam prep. "
-            "Ignore admin details like room numbers, URLs, office hours, instructor contacts. "
-            "Return JSON: {\"concepts\": [\"...\"]}\n\n"
-            f"TEXT:\n{text[:12000]}"
+            "Task: extract only explainable study concepts from the source text.\n"
+            "Hard constraints:\n"
+            "1) Return 12-30 concepts when available (do not stop at 12 if more strong concepts exist).\n"
+            "2) Keep only explainable academic concepts: principles, methods, formulas, algorithms, models, "
+            "processes, or technical terms.\n"
+            "3) Keep only concepts useful for learning, revision, or exam questions.\n"
+            "4) Exclude all administrative/logistics content: course title/number, instructor names, dates, grading, "
+            "URLs, room numbers, office hours, submission rules, textbook metadata.\n"
+            "5) Exclude sentences and long clauses.\n"
+            "6) Each concept must be a short noun phrase (1-6 words), lowercase.\n"
+            "7) Deduplicate and normalize synonyms to one canonical concept label.\n"
+            "8) Rank concepts by exam usefulness (most important first).\n"
+            "9) If not clearly explainable, exclude it.\n"
+            "Output JSON only with exact schema: {\"concepts\": [\"...\"]}\n"
+            "No markdown. No extra keys. No commentary.\n\n"
+            f"SOURCE TEXT:\n{text[:12000]}"
         ),
     )
     llm_concepts = llm_result.get("concepts", [])
@@ -231,6 +257,7 @@ def concept_extraction(state: PipelineState) -> PipelineState:
     return {**state, "concepts": concepts, "llm_status": llm_status}
 
 
+@traceable(run_type="chain", name="normalize_concepts")
 def normalize_concepts(state: PipelineState) -> PipelineState:
     seen = set()
     normalized = []
@@ -242,11 +269,13 @@ def normalize_concepts(state: PipelineState) -> PipelineState:
     return {**state, "normalized_concepts": normalized}
 
 
+@traceable(run_type="chain", name="estimate_priority")
 def estimate_priority(state: PipelineState) -> PipelineState:
     priority = state.get("normalized_concepts", [])[:5]
     return {**state, "priority_concepts": priority}
 
 
+@traceable(run_type="chain", name="select_scenario_seed")
 def select_scenario_seed(state: PipelineState) -> PipelineState:
     priority = state.get("priority_concepts", [])
     seed = {
@@ -257,6 +286,7 @@ def select_scenario_seed(state: PipelineState) -> PipelineState:
     return {**state, "scenario_seed": seed}
 
 
+@traceable(run_type="chain", name="generate_learning_event")
 def generate_learning_event(state: PipelineState) -> PipelineState:
     seed = state.get("scenario_seed", {})
     focus = seed.get("focus", "general review")
@@ -265,14 +295,29 @@ def generate_learning_event(state: PipelineState) -> PipelineState:
 
     llm_result, llm_status = _llm_json(
         system_prompt=(
-            "You are a learning designer. Create an engaging, interactive study story. "
+            "You are an expert educational story writer and learning designer. "
+            "You transform technical study material into engaging, accurate, exam-focused narratives. "
+            "Never invent topics not present in the source text or concepts. "
             "Return valid JSON only."
         ),
         user_prompt=(
-            "Create an interactive exam-prep story from these concepts and source text. "
-            "Tone: motivating but practical. "
-            "Make the story second-person and include at least two decision points "
-            "(e.g., Choice A / Choice B) and one quick recall question. "
+            "Task: write an interactive learning story using only the given concepts and source text.\n"
+            "Goal: help a student understand concepts deeply and retain them for exams.\n\n"
+            "Hard constraints:\n"
+            "1) Use ONLY ideas grounded in the provided concepts/source text.\n"
+            "2) Story must be second-person (\"you\") and engaging, but academically accurate.\n"
+            "3) Keep explanations simple, concrete, and beginner-friendly.\n"
+            "4) Include exactly 2 decision points in the story (Choice A / Choice B).\n"
+            "5) Include exactly 1 quick recall question.\n"
+            "6) Tie at least 3 priority concepts into the narrative naturally.\n"
+            "7) Avoid fluff, fantasy drift, and generic motivational filler.\n"
+            "8) Checklist must be practical and exam-oriented (4 to 6 items).\n"
+            "9) Use concise sections so it is readable in one sitting.\n\n"
+            "Writing style:\n"
+            "- energetic, clear, and focused\n"
+            "- short paragraphs\n"
+            "- concept-first explanations with mini examples\n"
+            "- each section should move learning forward\n\n"
             "Return JSON with exact keys:\n"
             "{"
             "\"title\": str, "
@@ -281,7 +326,8 @@ def generate_learning_event(state: PipelineState) -> PipelineState:
             "\"opening\": str, "
             "\"checkpoint\": str, "
             "\"boss_level\": str"
-            "}\n\n"
+            "}\n"
+            "No markdown. No extra keys. No commentary.\n\n"
             f"CONCEPTS: {concepts}\n\n"
             f"SOURCE TEXT:\n{state.get('cleaned_text', '')[:12000]}"
         ),
@@ -402,6 +448,7 @@ def build_graph():
 PIPELINE_GRAPH = build_graph()
 
 
+@traceable(run_type="chain", name="run_pipeline")
 def run_pipeline(raw_files: list, extracted_text: str = "") -> PipelineState:
     initial_state: PipelineState = {
         "raw_files": raw_files,
@@ -420,6 +467,67 @@ def run_pipeline(raw_files: list, extracted_text: str = "") -> PipelineState:
         "llm_status": "",
     }
     return PIPELINE_GRAPH.invoke(initial_state)
+
+
+def _state_preview_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= 180 else f"{value[:180]}... ({len(value)} chars)"
+    if isinstance(value, list):
+        if len(value) <= 6:
+            return value
+        return value[:6] + [f"... ({len(value)} items total)"]
+    if isinstance(value, dict):
+        preview = {}
+        for key, inner in value.items():
+            preview[key] = _state_preview_value(inner)
+        return preview
+    return value
+
+
+@traceable(run_type="chain", name="run_pipeline_with_trace")
+def run_pipeline_with_trace(
+    raw_files: list, extracted_text: str = ""
+) -> tuple[PipelineState, list[dict[str, Any]]]:
+    initial_state: PipelineState = {
+        "raw_files": raw_files,
+        "extracted_text": extracted_text,
+        "cleaned_text": "",
+        "chunks": [],
+        "concepts": [],
+        "normalized_concepts": [],
+        "priority_concepts": [],
+        "scenario_seed": {},
+        "learning_event": {},
+        "todo_checklist": [],
+        "interactive_story": {},
+        "final_storytelling": "",
+        "llm_used": False,
+        "llm_status": "",
+    }
+
+    current_state: dict[str, Any] = dict(initial_state)
+    trace: list[dict[str, Any]] = []
+
+    for update in PIPELINE_GRAPH.stream(initial_state, stream_mode="updates"):
+        if not isinstance(update, dict):
+            continue
+        for node_name, node_update in update.items():
+            if not isinstance(node_update, dict):
+                continue
+            current_state.update(node_update)
+            trace.append(
+                {
+                    "node": node_name,
+                    "updated_fields": list(node_update.keys()),
+                    "state_preview": {
+                        key: _state_preview_value(current_state.get(key))
+                        for key in current_state.keys()
+                    },
+                }
+            )
+
+    final_state = PIPELINE_GRAPH.invoke(initial_state)
+    return final_state, trace
 
 
 if __name__ == "__main__":
