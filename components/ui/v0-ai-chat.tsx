@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode, KeyboardEvent } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import type { UploadResult } from "@/types";
 import {
   ArrowUpIcon,
   BookOpen,
   Brain,
   FileUp,
+  Loader2,
   Paperclip,
   PlusIcon,
   Sparkles,
@@ -67,34 +70,19 @@ function useAutoResizeTextarea({ minHeight, maxHeight }: UseAutoResizeTextareaPr
 /* ------------------------------------------------------------------ */
 
 export function VercelV0Chat() {
+  const router = useRouter();
   const [value, setValue] = useState("");
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
-  const [uploadStatus, setUploadStatus] = useState("");
-  const [learningOutput, setLearningOutput] = useState<
-    Array<{
-      filename: string;
-      storyText: string;
-      llmUsed: boolean;
-      llmStatus: string;
-      traceNodes: string[];
-      concepts: string[];
-      checklist: string[];
-      storyTitle: string;
-      storyOpening: string;
-    }>
-  >([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const { textareaRef, adjustHeight } = useAutoResizeTextarea({
     minHeight: 60,
     maxHeight: 200,
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const openFilePicker = () => {
-    fileInputRef.current?.click();
-  };
+  const openFilePicker = () => fileInputRef.current?.click();
 
-  /** Stage files when user picks them (don't upload yet). */
   const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
     const picked = event.target.files ? Array.from(event.target.files) : [];
     if (picked.length === 0) return;
@@ -102,12 +90,11 @@ export function VercelV0Chat() {
     event.target.value = "";
   };
 
-  /** Remove a staged file chip. */
   const removeStaged = (index: number) => {
     setStagedFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  /** Upload all staged files (called on Enter / Send click). */
+  /** Upload files → store result in sessionStorage → navigate to /workspace */
   const handleSubmit = async () => {
     if (stagedFiles.length === 0 && !value.trim()) return;
 
@@ -115,13 +102,11 @@ export function VercelV0Chat() {
     setStagedFiles([]);
     setValue("");
     adjustHeight(true);
+    setUploadError("");
 
     if (filesToUpload.length === 0) return;
 
     setIsUploading(true);
-    setUploadStatus(
-      `Processing ${filesToUpload.length} file${filesToUpload.length === 1 ? "" : "s"}...`
-    );
 
     try {
       const results = await Promise.all(
@@ -132,65 +117,41 @@ export function VercelV0Chat() {
             method: "POST",
             body: formData,
           });
-          const data = (await response.json()) as {
-            error?: string;
-            filename?: string;
-            chars?: number;
-            learning_event?: { title?: string };
-            concepts?: string[];
-            checklist?: string[];
-            interactive_story?: { title?: string; opening?: string };
-            final_storytelling?: string;
-            llm_used?: boolean;
-            llm_status?: string;
-            pipeline_trace?: Array<{ node?: string }>;
-          };
+          const data = await response.json();
           return { file, ok: response.ok, data };
         })
       );
 
       const failed = results.filter((r) => !r.ok);
-      const succeeded = results.filter((r) => r.ok);
-
       if (failed.length > 0) {
-        const failedNames = failed.map((r) => r.file.name).join(", ");
-        setUploadStatus(
-          succeeded.length > 0
-            ? `Processed ${succeeded.length} file(s). Failed: ${failedNames}`
-            : `Upload failed: ${failed[0].data.error ?? failedNames}`
-        );
-      } else {
-        const mapped = succeeded.map((r) => ({
+        setUploadError(failed[0].data.error ?? "Upload failed. Try again.");
+        setIsUploading(false);
+        return;
+      }
+
+      // Store full API responses in sessionStorage
+      const uploadResults: UploadResult[] = results
+        .filter((r) => r.ok)
+        .map((r) => ({
           filename: r.data.filename ?? r.file.name,
-          storyText: r.data.final_storytelling ?? "",
-          llmUsed: Boolean(r.data.llm_used),
-          llmStatus: r.data.llm_status ?? "",
-          traceNodes: (r.data.pipeline_trace ?? [])
-            .map((step) => step.node ?? "")
-            .filter((node): node is string => Boolean(node)),
+          chars: r.data.chars ?? 0,
           concepts: r.data.concepts ?? [],
           checklist: r.data.checklist ?? [],
-          storyTitle: r.data.interactive_story?.title ?? "LastMinute Mission",
-          storyOpening: r.data.interactive_story?.opening ?? "",
+          interactive_story: r.data.interactive_story ?? {
+            title: "",
+            opening: "",
+            checkpoint: "",
+            boss_level: "",
+          },
+          final_storytelling: r.data.final_storytelling ?? "",
+          llm_used: Boolean(r.data.llm_used),
+          llm_status: r.data.llm_status ?? "",
         }));
-        setLearningOutput(mapped);
 
-        const summary = succeeded
-          .map((r) => {
-            const base = `${r.data.filename ?? r.file.name} (${r.data.chars ?? 0} chars)`;
-            const title = r.data.learning_event?.title;
-            return title ? `${base} -> ${title}` : base;
-          })
-          .join("; ");
-        setUploadStatus(
-          succeeded.length === 1
-            ? `Processed ${summary}.`
-            : `Processed ${succeeded.length} files: ${summary}`
-        );
-      }
+      sessionStorage.setItem("lastminute_upload", JSON.stringify(uploadResults));
+      router.push("/workspace");
     } catch {
-      setUploadStatus("Upload failed.");
-    } finally {
+      setUploadError("Upload failed. Check your connection.");
       setIsUploading(false);
     }
   };
@@ -202,19 +163,31 @@ export function VercelV0Chat() {
     }
   };
 
+  /* ---- uploading overlay ---- */
+  if (isUploading) {
+    return (
+      <div className="flex w-full max-w-2xl flex-col items-center gap-6 px-4 py-32">
+        <Loader2 className="h-8 w-8 animate-spin text-foreground" />
+        <p className="text-sm text-muted-foreground">
+          Processing your materials...
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex w-full max-w-2xl flex-col items-center gap-10 px-4 py-16">
-      {/* Heading */}
-      <div className="flex flex-col items-center gap-2 text-center">
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-          LastMinute
+    <div className="flex w-full max-w-2xl flex-col items-center gap-12 px-4 py-20">
+      {/* Logo */}
+      <div className="flex flex-col items-center gap-3 text-center">
+        <h1 className="font-mono text-4xl font-bold tracking-tighter text-foreground">
+          lastminute<span className="text-muted-foreground">.ai</span>
         </h1>
-        <p className="max-w-sm text-sm text-muted-foreground">
-          Upload your materials, choose your intensity, start learning.
+        <p className="max-w-xs text-[13px] leading-relaxed text-muted-foreground">
+          Upload your study materials. We turn them into interactive missions.
         </p>
       </div>
 
-      {/* Chat input */}
+      {/* Input area */}
       <div className="w-full">
         <div className="rounded-xl border border-border bg-background transition-shadow focus-within:border-foreground/20">
           {/* Staged file chips */}
@@ -223,7 +196,7 @@ export function VercelV0Chat() {
               {stagedFiles.map((file, idx) => (
                 <span
                   key={`${file.name}-${idx}`}
-                  className="flex items-center gap-1.5 rounded-lg bg-muted px-2.5 py-1 text-xs text-foreground"
+                  className="flex items-center gap-1.5 rounded-md bg-muted px-2.5 py-1 text-xs text-foreground"
                 >
                   <FileUp className="h-3 w-3 shrink-0 text-muted-foreground" />
                   <span className="max-w-[160px] truncate">{file.name}</span>
@@ -268,8 +241,7 @@ export function VercelV0Chat() {
             <button
               type="button"
               onClick={openFilePicker}
-              disabled={isUploading}
-              className="group flex items-center gap-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+              className="group flex items-center gap-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
             >
               <Paperclip className="h-4 w-4" />
               <span className="hidden text-xs group-hover:inline">Attach</span>
@@ -286,7 +258,6 @@ export function VercelV0Chat() {
 
               <button
                 type="button"
-                disabled={isUploading}
                 onClick={handleSubmit}
                 className={cn(
                   "flex items-center justify-center rounded-md p-1.5 transition-all",
@@ -319,55 +290,19 @@ export function VercelV0Chat() {
           />
           <ActionButton icon={<BookOpen className="h-3.5 w-3.5" />} label="Study Materials" />
           <ActionButton icon={<Brain className="h-3.5 w-3.5" />} label="Practice Quiz" />
-          <ActionButton icon={<Sparkles className="h-3.5 w-3.5" />} label="Start a Mission" href="/workspace" />
+          <ActionButton
+            icon={<Sparkles className="h-3.5 w-3.5" />}
+            label="Start a Mission"
+            href="/workspace"
+          />
         </div>
-        {uploadStatus ? (
-          <p className="mt-3 text-center text-xs text-muted-foreground">
-            {uploadStatus}
+
+        {/* Error */}
+        {uploadError && (
+          <p className="mt-3 text-center text-xs text-foreground/60">
+            {uploadError}
           </p>
-        ) : null}
-        {learningOutput.length > 0 ? (
-          <div className="mt-4 space-y-3">
-            {learningOutput.map((item) => (
-              <div
-                key={item.filename}
-                className="rounded-xl border border-border bg-card p-4 text-sm text-foreground"
-              >
-                <p className="text-xs text-muted-foreground">{item.filename}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {item.llmUsed ? "LLM-generated story" : "Fallback story (LLM unavailable)"}
-                </p>
-                {!item.llmUsed && item.llmStatus ? (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    Reason: {item.llmStatus}
-                  </p>
-                ) : null}
-                {item.traceNodes.length > 0 ? (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    Trace: {item.traceNodes.join(" -> ")}
-                  </p>
-                ) : null}
-                {item.storyText ? (
-                  <p className="mt-2 whitespace-pre-line leading-6">{item.storyText}</p>
-                ) : null}
-                {!item.storyText ? <p className="mt-2 font-medium">{item.storyTitle}</p> : null}
-                {!item.storyText && item.storyOpening ? (
-                  <p className="mt-1 text-muted-foreground">{item.storyOpening}</p>
-                ) : null}
-                {item.concepts.length > 0 ? (
-                  <p className="mt-3 text-xs">Concepts: {item.concepts.join(", ")}</p>
-                ) : null}
-                {item.checklist.length > 0 ? (
-                  <ul className="mt-2 list-disc pl-4 text-xs">
-                    {item.checklist.slice(0, 4).map((task, idx) => (
-                      <li key={`${item.filename}-task-${idx}`}>{task}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : null}
+        )}
       </div>
     </div>
   );

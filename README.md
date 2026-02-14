@@ -18,6 +18,12 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+**Environment (optional for AI pipeline):**  
+Copy `.env.example` to `.env` and set `GEMINI_API_KEY` (from [Google AI Studio](https://aistudio.google.com/apikey)) so uploads use the LLM pipeline for concepts and story generation. Without it, uploads still work but use fallback content.
+
+**Python (for upload parsing):**  
+`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+
 Other commands:
 
 | Command           | What it does              |
