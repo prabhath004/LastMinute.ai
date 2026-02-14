@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactNode, KeyboardEvent } from "react";
+import type { ChangeEvent, ReactNode, KeyboardEvent } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
@@ -67,10 +67,54 @@ function useAutoResizeTextarea({ minHeight, maxHeight }: UseAutoResizeTextareaPr
 
 export function VercelV0Chat() {
   const [value, setValue] = useState("");
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
   const { textareaRef, adjustHeight } = useAutoResizeTextarea({
     minHeight: 60,
     maxHeight: 200,
   });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const openFilePicker = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadStatus(`Uploading ${file.name}...`);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        filename?: string;
+        chars?: number;
+      };
+
+      if (!response.ok) {
+        setUploadStatus(data.error ?? "Upload failed.");
+        return;
+      }
+
+      setUploadStatus(
+        `Processed ${data.filename ?? file.name} (${data.chars ?? 0} chars).`
+      );
+    } catch {
+      setUploadStatus("Upload failed.");
+    } finally {
+      setIsUploading(false);
+      event.target.value = "";
+    }
+  };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -130,6 +174,8 @@ export function VercelV0Chat() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                onClick={openFilePicker}
+                disabled={isUploading}
                 className="group flex items-center gap-1.5 rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <Paperclip className="h-4 w-4" />
@@ -162,6 +208,13 @@ export function VercelV0Chat() {
               </button>
             </div>
           </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.txt,.md,.pptx,.png,.jpg,.jpeg"
+            className="hidden"
+            onChange={handleUpload}
+          />
         </div>
 
         {/* Quick-action chips */}
@@ -169,6 +222,7 @@ export function VercelV0Chat() {
           <ActionButton
             icon={<FileUp className="h-4 w-4" />}
             label="Upload Syllabus"
+            onClick={openFilePicker}
           />
           <ActionButton
             icon={<BookOpen className="h-4 w-4" />}
@@ -183,6 +237,11 @@ export function VercelV0Chat() {
             label="Start a Mission"
           />
         </div>
+        {uploadStatus ? (
+          <p className="mt-3 text-center text-xs text-muted-foreground">
+            {uploadStatus}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -195,12 +254,14 @@ export function VercelV0Chat() {
 interface ActionButtonProps {
   icon: ReactNode;
   label: string;
+  onClick?: () => void;
 }
 
-function ActionButton({ icon, label }: ActionButtonProps) {
+function ActionButton({ icon, label, onClick }: ActionButtonProps) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
     >
       {icon}

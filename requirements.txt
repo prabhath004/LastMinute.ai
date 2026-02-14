@@ -1,0 +1,8 @@
+
+
+
+# agent/loaders
+pdfplumber
+python-pptx
+pillow
+pytesseract
