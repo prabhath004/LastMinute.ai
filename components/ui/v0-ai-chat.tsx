@@ -13,6 +13,7 @@ import {
   Paperclip,
   PlusIcon,
   Sparkles,
+  X,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -67,6 +68,7 @@ function useAutoResizeTextarea({ minHeight, maxHeight }: UseAutoResizeTextareaPr
 
 export function VercelV0Chat() {
   const [value, setValue] = useState("");
+  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [uploadStatus, setUploadStatus] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const { textareaRef, adjustHeight } = useAutoResizeTextarea({
@@ -79,50 +81,84 @@ export function VercelV0Chat() {
     fileInputRef.current?.click();
   };
 
-  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  /** Stage files when user picks them (don't upload yet). */
+  const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    const picked = event.target.files ? Array.from(event.target.files) : [];
+    if (picked.length === 0) return;
+    setStagedFiles((prev) => [...prev, ...picked]);
+    event.target.value = "";
+  };
+
+  /** Remove a staged file chip. */
+  const removeStaged = (index: number) => {
+    setStagedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  /** Upload all staged files (called on Enter / Send click). */
+  const handleSubmit = async () => {
+    if (stagedFiles.length === 0 && !value.trim()) return;
+
+    const filesToUpload = [...stagedFiles];
+    setStagedFiles([]);
+    setValue("");
+    adjustHeight(true);
+
+    if (filesToUpload.length === 0) return;
 
     setIsUploading(true);
-    setUploadStatus(`Uploading ${file.name}...`);
+    setUploadStatus(
+      `Processing ${filesToUpload.length} file${filesToUpload.length === 1 ? "" : "s"}...`
+    );
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = (await response.json()) as {
-        error?: string;
-        filename?: string;
-        chars?: number;
-      };
-
-      if (!response.ok) {
-        setUploadStatus(data.error ?? "Upload failed.");
-        return;
-      }
-
-      setUploadStatus(
-        `Processed ${data.filename ?? file.name} (${data.chars ?? 0} chars).`
+      const results = await Promise.all(
+        filesToUpload.map(async (file) => {
+          const formData = new FormData();
+          formData.append("file", file);
+          const response = await fetch("/api/upload", {
+            method: "POST",
+            body: formData,
+          });
+          const data = (await response.json()) as {
+            error?: string;
+            filename?: string;
+            chars?: number;
+          };
+          return { file, ok: response.ok, data };
+        })
       );
+
+      const failed = results.filter((r) => !r.ok);
+      const succeeded = results.filter((r) => r.ok);
+
+      if (failed.length > 0) {
+        const failedNames = failed.map((r) => r.file.name).join(", ");
+        setUploadStatus(
+          succeeded.length > 0
+            ? `Processed ${succeeded.length} file(s). Failed: ${failedNames}`
+            : `Upload failed: ${failed[0].data.error ?? failedNames}`
+        );
+      } else {
+        const summary = succeeded
+          .map((r) => `${r.data.filename ?? r.file.name} (${r.data.chars ?? 0} chars)`)
+          .join("; ");
+        setUploadStatus(
+          succeeded.length === 1
+            ? `Processed ${summary}.`
+            : `Processed ${succeeded.length} files: ${summary}`
+        );
+      }
     } catch {
       setUploadStatus("Upload failed.");
     } finally {
       setIsUploading(false);
-      event.target.value = "";
     }
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (value.trim()) {
-        setValue("");
-        adjustHeight(true);
-      }
+      handleSubmit();
     }
   };
 
@@ -141,6 +177,28 @@ export function VercelV0Chat() {
       {/* Chat input */}
       <div className="w-full">
         <div className="rounded-xl border border-border bg-background transition-shadow focus-within:border-foreground/20">
+          {/* Staged file chips */}
+          {stagedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-3 pt-3">
+              {stagedFiles.map((file, idx) => (
+                <span
+                  key={`${file.name}-${idx}`}
+                  className="flex items-center gap-1.5 rounded-lg bg-muted px-2.5 py-1 text-xs text-foreground"
+                >
+                  <FileUp className="h-3 w-3 shrink-0 text-muted-foreground" />
+                  <span className="max-w-[160px] truncate">{file.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeStaged(idx)}
+                    className="ml-0.5 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
           <div className="overflow-y-auto">
             <Textarea
               ref={textareaRef}
@@ -188,9 +246,11 @@ export function VercelV0Chat() {
 
               <button
                 type="button"
+                disabled={isUploading}
+                onClick={handleSubmit}
                 className={cn(
                   "flex items-center justify-center rounded-md p-1.5 transition-all",
-                  value.trim()
+                  value.trim() || stagedFiles.length > 0
                     ? "bg-foreground text-background"
                     : "text-muted-foreground"
                 )}
@@ -204,8 +264,9 @@ export function VercelV0Chat() {
             ref={fileInputRef}
             type="file"
             accept=".pdf,.txt,.md,.pptx,.png,.jpg,.jpeg"
+            multiple
             className="hidden"
-            onChange={handleUpload}
+            onChange={handleFileSelect}
           />
         </div>
 

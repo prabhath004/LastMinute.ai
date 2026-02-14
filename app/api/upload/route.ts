@@ -10,6 +10,8 @@ export const runtime = "nodejs";
 interface LoaderResult {
   chars: number;
   preview: string;
+  /** Full extracted text (capped for very large docs to avoid huge responses) */
+  text: string;
 }
 
 function parseLastJsonLine(stdout: string): Record<string, unknown> {
@@ -49,7 +51,11 @@ from agents.loaders.loader_factory import get_loader
 path = sys.argv[1]
 try:
     text = get_loader(path).load(path)
-    print(json.dumps({"ok": True, "chars": len(text), "preview": text[:200]}))
+    # Cap at 100k chars so API response stays reasonable
+    max_chars = 100000
+    truncated = len(text) > max_chars
+    out_text = text[:max_chars] if truncated else text
+    print(json.dumps({"ok": True, "chars": len(text), "preview": text[:200], "text": out_text, "truncated": truncated}))
 except Exception as error:
     print(json.dumps({"ok": False, "error": str(error)}))
     sys.exit(1)
@@ -82,6 +88,7 @@ except Exception as error:
           resolve({
             chars: Number(payload.chars ?? 0),
             preview: String(payload.preview ?? ""),
+            text: String(payload.text ?? ""),
           });
           return;
         }
@@ -122,6 +129,7 @@ export async function POST(request: Request) {
       size: file.size,
       chars: result.chars,
       preview: result.preview,
+      text: result.text,
       status: "processed",
     });
   } catch (error) {
