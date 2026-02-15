@@ -23,9 +23,11 @@ interface ImageAnnotatorProps {
   src: string;
   alt: string;
   className?: string;
+  /** When true, compact layout for Voxi chat: toolbar always visible, no Analyze button */
+  embedInChat?: boolean;
 }
 
-export function ImageAnnotator({ src, alt, className }: ImageAnnotatorProps) {
+export function ImageAnnotator({ src, alt, className, embedInChat }: ImageAnnotatorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -323,14 +325,24 @@ export function ImageAnnotator({ src, alt, className }: ImageAnnotatorProps) {
   const isActive = tool !== "none";
 
   return (
-    <div className="group relative" ref={containerRef}>
+    <div
+      className={cn(
+        "group relative",
+        embedInChat && "max-h-[220px] overflow-hidden rounded-lg border border-border bg-muted/20"
+      )}
+      ref={containerRef}
+    >
       {/* Original image */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         ref={imgRef}
         src={src}
         alt={alt}
-        className={cn("h-auto w-full object-contain", className)}
+        className={cn(
+          "h-auto w-full object-contain",
+          embedInChat && "max-h-[180px] object-contain",
+          className
+        )}
         onLoad={syncCanvas}
         draggable={false}
       />
@@ -351,13 +363,14 @@ export function ImageAnnotator({ src, alt, className }: ImageAnnotatorProps) {
         onTouchEnd={handlePointerUp}
       />
 
-      {/* Toolbar — shows on hover or when active */}
+      {/* Toolbar — inline when embedInChat, else overlay on hover/active */}
       <div
         className={cn(
-          "absolute right-2 top-2 flex items-center gap-1 rounded-lg border border-border bg-background/90 px-1.5 py-1 shadow-sm backdrop-blur-sm transition-opacity",
-          isActive || hasDrawing
-            ? "opacity-100"
-            : "opacity-0 group-hover:opacity-100"
+          "flex items-center gap-1 rounded-lg border border-border bg-background/90 px-1.5 py-1 shadow-sm backdrop-blur-sm",
+          embedInChat
+            ? "absolute bottom-2 left-2 right-2 flex-wrap"
+            : "absolute right-2 top-2 transition-opacity " +
+              (isActive || hasDrawing ? "opacity-100" : "opacity-0 group-hover:opacity-100")
         )}
       >
         <button
@@ -398,26 +411,28 @@ export function ImageAnnotator({ src, alt, className }: ImageAnnotatorProps) {
             >
               <Eraser className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              onClick={analyzeDrawing}
-              disabled={analyzing}
-              className="flex items-center gap-1 rounded-md bg-foreground px-2 py-1 text-[10px] font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
-              title="Analyze highlighted area"
-            >
-              {analyzing ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Send className="h-3 w-3" />
-              )}
-              Analyze
-            </button>
+            {!embedInChat && (
+              <button
+                type="button"
+                onClick={analyzeDrawing}
+                disabled={analyzing}
+                className="flex items-center gap-1 rounded-md bg-foreground px-2 py-1 text-[10px] font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
+                title="Analyze highlighted area"
+              >
+                {analyzing ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Send className="h-3 w-3" />
+                )}
+                Analyze
+              </button>
+            )}
           </>
         )}
       </div>
 
-      {/* Analysis result */}
-      {showAnalysis && (
+      {/* Analysis result (hidden when embedInChat) */}
+      {!embedInChat && showAnalysis && (
         <div className="absolute bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm">
           <div className="flex items-start justify-between gap-2 px-3 py-2">
             <div className="min-w-0 flex-1">

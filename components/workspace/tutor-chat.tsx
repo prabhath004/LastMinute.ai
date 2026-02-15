@@ -11,6 +11,7 @@ import {
   VolumeX,
   Square,
   X,
+  Pencil,
 } from "lucide-react";
 import { useVoiceInput } from "@/hooks/use-voice-input";
 import { useAnnotationStore } from "@/hooks/use-annotation-store";
@@ -44,9 +45,12 @@ interface TutorChatProps {
   context: string;
   open: boolean;
   onClose: () => void;
+  /** Topic draw mode: draw anywhere on the lesson */
+  drawMode?: boolean;
+  onDrawModeToggle?: () => void;
 }
 
-export function TutorChat({ context, open, onClose }: TutorChatProps) {
+export function TutorChat({ context, open, onClose, drawMode = false, onDrawModeToggle }: TutorChatProps) {
   /* ---- core state ---- */
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -442,8 +446,8 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
             </div>
             <p className="text-center text-xs text-muted-foreground leading-relaxed">
               {sttSupported
-                ? "Say \"Hey Voxi\" or press the mic.\nDraw on an image, then say \"explain this\"."
-                : "Type a question or \"analyze this\" after\nhighlighting an image area."}
+                ? "Say \"Hey Voxi\" or press the mic.\nTap the pen to draw on the topic, then say \"explain this\"."
+                : "Type a question or tap the pen to draw\non the topic, then say \"explain this\"."}
             </p>
           </div>
         )}
@@ -498,11 +502,26 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
         </div>
       )}
 
-      {/* ── Input Area: Mic hero + text secondary ── */}
+      {/* ── Input Area: Draw + Mic + text ── */}
       <div className="border-t border-border px-3 pb-3 pt-2">
-        {/* Big mic button */}
-        {sttSupported && (
-          <div className="mb-2 flex justify-center">
+        {/* Draw tool + Big mic button */}
+        <div className="mb-2 flex items-center justify-center gap-3">
+          {onDrawModeToggle && (
+            <button
+              type="button"
+              onClick={onDrawModeToggle}
+              className={cn(
+                "flex h-11 w-11 items-center justify-center rounded-full border-2 transition-all",
+                drawMode
+                  ? "border-red-500 bg-red-500/15 text-red-600"
+                  : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"
+              )}
+              title={drawMode ? "Exit draw mode" : "Draw on topic"}
+            >
+              <Pencil className="h-5 w-5" />
+            </button>
+          )}
+          {sttSupported && (
             <button
               type="button"
               onClick={toggleMic}
@@ -529,8 +548,8 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
                 <Mic className="h-5 w-5" />
               )}
             </button>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Text input row */}
         <div className="flex items-end gap-1.5">

@@ -20,6 +20,11 @@ interface SupportPanelProps {
   voxiOpenTrigger?: number;
   /** Callback so parent knows if Voxi is open (for disabling wake-word) */
   onVoxiOpenChange?: (open: boolean) => void;
+  /** Current slide image for "Draw on slide" in Voxi chat */
+  currentSlideImage?: { src: string; alt: string } | null;
+  /** Topic draw mode: draw anywhere on the lesson */
+  drawMode?: boolean;
+  onDrawModeChange?: (on: boolean) => void;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -35,6 +40,9 @@ export function SupportPanel({
   totalSteps,
   voxiOpenTrigger,
   onVoxiOpenChange,
+  currentSlideImage,
+  drawMode = false,
+  onDrawModeChange,
   className,
   style,
 }: SupportPanelProps) {
@@ -163,6 +171,8 @@ export function SupportPanel({
           context={tutorContext}
           open={tutorOpen}
           onClose={() => setTutorOpen(false)}
+          drawMode={drawMode}
+          onDrawModeToggle={onDrawModeChange}
         />
       </div>
     </div>

@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TopicNav } from "@/components/workspace/topic-nav";
 import { LessonView } from "@/components/workspace/lesson-view";
 import { SupportPanel } from "@/components/workspace/support-panel";
+import { TopicDrawingOverlay } from "@/components/workspace/topic-drawing-overlay";
 import { VercelV0Chat } from "@/components/ui/v0-ai-chat";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
@@ -58,6 +59,7 @@ export default function WorkspacePage() {
   const annotationStore = useCreateAnnotationStore();
   const [voxiOpenTrigger, setVoxiOpenTrigger] = useState(0);
   const [voxiIsOpen, setVoxiIsOpen] = useState(false);
+  const [drawMode, setDrawMode] = useState(false);
 
   /* ---- resizable right panel (Voxi + checklist) ---- */
   const [rightPanelWidth, setRightPanelWidth] = useState(320);
@@ -371,6 +373,27 @@ export default function WorkspacePage() {
   const canGoPrevStory = currentStoryIndex > 0;
   const canGoNextStory = currentStoryIndex < topicStorylines.length - 1;
 
+  /** Current slide image for Voxi "Draw on slide" (first image of current topic) */
+  const currentSlideImage = useMemo(() => {
+    const card = topicStorylines[currentStoryIndex];
+    if (!card || !storyBeats?.length) return null;
+    const topicLabels = [
+      ...(card.topics ?? []).map((t) => t.toLowerCase().trim()),
+      ...(card.subtopics ?? []).map((s) => s.toLowerCase().trim()),
+      (card.title ?? "").toLowerCase().trim(),
+    ].filter(Boolean);
+    const beat = storyBeats.find((b) => {
+      const label = (b.label ?? "").toLowerCase().trim();
+      return label && topicLabels.some((tl) => tl.includes(label) || label.includes(tl));
+    });
+    const step = beat?.image_steps?.find((s) => s.image_data);
+    if (!step?.image_data) return null;
+    return {
+      src: step.image_data,
+      alt: step.step_label || beat?.label || "Current slide",
+    };
+  }, [topicStorylines, currentStoryIndex, storyBeats]);
+
   const handlePrevStory = useCallback(() => {
     setActiveTopicId((prev) => {
       const idx =
@@ -465,22 +488,30 @@ export default function WorkspacePage() {
               onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
             />
           </div>
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             {sessionId ? (
-              <LessonView
-                activeTopicId={activeTopicId}
-                missionTitle={storyTitle}
-                missionStory={storytelling}
-                topicStorylines={topicStorylines}
-                storyBeats={storyBeats}
-                currentStoryIndex={currentStoryIndex}
-                totalStories={topicStorylines.length}
-                canGoPrevStory={canGoPrevStory}
-                canGoNextStory={canGoNextStory}
-                onPrevStory={handlePrevStory}
-                onNextStory={handleNextStory}
-                loading={false}
-              />
+              <>
+                <LessonView
+                  activeTopicId={activeTopicId}
+                  missionTitle={storyTitle}
+                  missionStory={storytelling}
+                  topicStorylines={topicStorylines}
+                  storyBeats={storyBeats}
+                  currentStoryIndex={currentStoryIndex}
+                  totalStories={topicStorylines.length}
+                  canGoPrevStory={canGoPrevStory}
+                  canGoNextStory={canGoNextStory}
+                  onPrevStory={handlePrevStory}
+                  onNextStory={handleNextStory}
+                  loading={false}
+                />
+                {drawMode && (
+                  <TopicDrawingOverlay
+                    currentSlideImage={currentSlideImage}
+                    onExit={() => setDrawMode(false)}
+                  />
+                )}
+              </>
             ) : (
               <div className="flex h-full items-center justify-center overflow-y-auto px-6 py-8">
                 <VercelV0Chat />
@@ -504,6 +535,9 @@ export default function WorkspacePage() {
             totalSteps={topicStorylines.length}
             voxiOpenTrigger={voxiOpenTrigger}
             onVoxiOpenChange={setVoxiIsOpen}
+            currentSlideImage={currentSlideImage}
+            drawMode={drawMode}
+            onDrawModeChange={setDrawMode}
             className="shrink-0"
             style={{ width: rightPanelWidth, minWidth: rightPanelWidth }}
           />

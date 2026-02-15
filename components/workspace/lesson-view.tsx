@@ -5,7 +5,6 @@ import type { TopicStorylineCard } from "@/types";
 import type { StoryBeat } from "@/app/api/upload/route";
 import { ChevronLeft, ChevronRight, Loader2, ImageIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ImageAnnotator } from "./image-annotator";
 
 interface LessonViewProps {
   activeTopicId: string | null;
@@ -76,9 +75,12 @@ function StoryBeatImages({ beat }: { beat: StoryBeat }) {
             key={`${beat.label}-step-${idx}`}
             className="overflow-hidden rounded-lg border border-border bg-muted/20"
           >
-            <ImageAnnotator
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
               src={step.image_data}
               alt={step.step_label || `${beat.label} diagram ${idx + 1}`}
+              className="h-auto w-full object-contain"
+              draggable={false}
             />
             {step.step_label && (
               <p className="border-t border-border bg-muted/30 px-2.5 py-1.5 text-[10px] text-muted-foreground">
