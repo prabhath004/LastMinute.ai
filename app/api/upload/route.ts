@@ -31,7 +31,7 @@ interface LoaderResult {
 }
 
 const UPLOAD_CACHE_DIR = path.join(process.cwd(), ".cache", "upload_results");
-const UPLOAD_CACHE_VERSION = "v5";
+const UPLOAD_CACHE_VERSION = "v6";
 const UPLOAD_CACHE_TTL_SECONDS = Number.parseInt(
   process.env.LASTMINUTE_UPLOAD_CACHE_TTL_SECONDS ?? "2592000",
   10

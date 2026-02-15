@@ -154,28 +154,52 @@ export function LessonView({
     );
   }
 
-  // Pre-compute which beats go with which topic index, plus unmatched beats
+  // Match beats to topics: first by label match, then by position (1:1), then round-robin
   const beatsByTopicIndex: Map<number, StoryBeat[]> = new Map();
-  const usedBeatLabels = new Set<string>();
+  const usedBeatIndices = new Set<number>();
 
-  topicStorylines.forEach((card, idx) => {
+  // Pass 1: match by label (fuzzy)
+  topicStorylines.forEach((card, topicIdx) => {
     const matched = findBeatsForTopic(card, storyBeats);
     if (matched.length > 0) {
-      beatsByTopicIndex.set(idx, matched);
-      matched.forEach((b) => usedBeatLabels.add(b.label));
+      beatsByTopicIndex.set(topicIdx, [...matched]);
+      matched.forEach((b) => {
+        const bi = storyBeats.indexOf(b);
+        if (bi >= 0) usedBeatIndices.add(bi);
+      });
     }
   });
 
-  // Any beats that didn't match a topic: distribute round-robin across topics
+  // Pass 2: for topics with no label match, try positional (beat[i] → topic[i])
+  topicStorylines.forEach((_, topicIdx) => {
+    if (beatsByTopicIndex.has(topicIdx)) return;
+    if (topicIdx < storyBeats.length && !usedBeatIndices.has(topicIdx)) {
+      const beat = storyBeats[topicIdx];
+      if (beat.image_steps.some((s) => s.image_data)) {
+        beatsByTopicIndex.set(topicIdx, [beat]);
+        usedBeatIndices.add(topicIdx);
+      }
+    }
+  });
+
+  // Pass 3: any remaining unmatched beats → distribute round-robin to topics without images
   const unmatchedBeats = storyBeats.filter(
-    (b) => !usedBeatLabels.has(b.label) && b.image_steps.some((s) => s.image_data)
+    (_, i) => !usedBeatIndices.has(i) && storyBeats[i].image_steps.some((s) => s.image_data)
   );
-  if (unmatchedBeats.length > 0 && topicStorylines.length > 0) {
+  if (unmatchedBeats.length > 0) {
+    const emptyTopicIndices = Array.from(
+      { length: topicStorylines.length },
+      (_, i) => i
+    ).filter((i) => !beatsByTopicIndex.has(i));
+
     unmatchedBeats.forEach((beat, i) => {
-      const idx = i % topicStorylines.length;
-      const existing = beatsByTopicIndex.get(idx) ?? [];
+      const targetIdx =
+        emptyTopicIndices.length > 0
+          ? emptyTopicIndices[i % emptyTopicIndices.length]
+          : i % topicStorylines.length;
+      const existing = beatsByTopicIndex.get(targetIdx) ?? [];
       existing.push(beat);
-      beatsByTopicIndex.set(idx, existing);
+      beatsByTopicIndex.set(targetIdx, existing);
     });
   }
 

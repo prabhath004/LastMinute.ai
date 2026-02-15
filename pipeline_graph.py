@@ -1025,78 +1025,100 @@ def _generate_image(description: str) -> str | None:
 
 @traceable(run_type="chain", name="generate_story_visuals")
 def generate_story_visuals(state: PipelineState) -> PipelineState:
-    """Break the story into beats and generate up to 3 images per beat where needed."""
-    story_text = state.get("final_storytelling", "")
-    concepts = state.get("priority_concepts", [])
-    if not story_text:
+    """Generate one image beat per topic storyline card so every topic gets visuals."""
+    story = state.get("interactive_story", {})
+    topic_cards = story.get("topic_storylines", []) if isinstance(story, dict) else []
+    if not isinstance(topic_cards, list) or not topic_cards:
         return {**state, "story_beats": []}
-    concepts_str = ", ".join(concepts) if concepts else "the main topics"
+
     source_text = state.get("cleaned_text", "")
+
+    # Build a topic list string for the LLM from actual card titles/topics
+    topic_descriptions: list[str] = []
+    for idx, card in enumerate(topic_cards):
+        topics = card.get("topics", [])
+        title = str(card.get("title", "")).strip()
+        label = " + ".join(str(t).strip() for t in topics if str(t).strip()) if topics else title
+        topic_descriptions.append(f"Topic {idx + 1}: {label}")
+    topics_str = "\n".join(topic_descriptions)
 
     result, _ = _llm_json(
         system_prompt=(
-            "You are an educational visual designer. You decide where images "
-            "would genuinely help in the material — only create a beat when a "
-            "concept benefits from a diagram (e.g. framework, process, comparison).\n\n"
+            "You are an educational visual designer. You create diagram prompts "
+            "for EVERY topic in a study guide.\n\n"
             "STRICT RULES:\n"
-            "1. Create beats ONLY where a visual adds value. Skip concepts that "
-            "   are purely textual or don't need a diagram. Fewer, relevant "
-            "   images are better than many filler ones.\n"
-            "2. Each beat's narrative must contain ONLY information from the "
-            "   source. Use the EXACT terminology from the source.\n"
-            "3. The beat label must be the actual concept name.\n"
-            "4. For EACH beat you create, give exactly 3 image_steps — each step "
-            "   a DIFFERENT visual (no repeated icons or labels):\n"
-            "     Step 1: one clear diagram (e.g. framework or definition)\n"
-            "     Step 2: a different diagram (e.g. process or mechanism)\n"
-            "     Step 3: a different diagram (e.g. result or comparison)\n"
-            "5. Image prompts must be SPECIFIC and unique per step.\n\n"
-            "Return valid JSON only. The beats array may be empty or have 1 to "
-            "several items — only include beats where images are needed."
+            "1. Create EXACTLY one beat per topic listed below. Every topic gets images.\n"
+            "2. The beat label must EXACTLY match the topic label given.\n"
+            "3. Each beat's narrative must use information from the source only.\n"
+            "4. For EACH beat, create exactly 2 image_steps — each step must "
+            "   describe a DIFFERENT visual (no repeated icons or labels):\n"
+            "     Step 1: one clear diagram (e.g. framework, definition, or overview)\n"
+            "     Step 2: a different diagram (e.g. process, comparison, or example)\n"
+            "5. Image prompts must be SPECIFIC, detailed, and unique per step.\n"
+            "6. Use exact terminology from the source text.\n\n"
+            "Return valid JSON only."
         ),
         user_prompt=(
-            "Decide where images are needed in this content. Create a beat only "
-            "for concepts that benefit from a diagram (e.g. the 4 Ps, a process "
-            "flow, a comparison). Do NOT create a fixed number of beats; use "
-            "as many or as few as needed (including zero).\n\n"
-            f"CONCEPTS: {concepts_str}\n\n"
-            "For each beat you create, provide:\n"
-            "  - label: the concept name\n"
-            "  - narrative: 2-5 sentences (second-person). Use exact terms from source.\n"
-            "  - is_decision: false\n"
-            "  - choices: []\n"
-            "  - image_steps: EXACTLY 3 objects with step_label and prompt (detailed diagram description).\n\n"
-            'Return JSON: {"beats": [{"label": "...", "narrative": "...", "is_decision": false, '
-            '"choices": [], "image_steps": [{"step_label": "Step 1: ...", "prompt": "..."}, ...]}, ...]}\n'
-            "Beats array: only include entries where a visual is needed.\n\n"
-            f"SOURCE:\n{source_text[:8000]}\n\n"
-            f"STORY (reference):\n{story_text[:4000]}"
+            "Create exactly one beat for EACH of these topics. Do NOT skip any topic.\n\n"
+            f"TOPICS:\n{topics_str}\n\n"
+            "For each beat provide:\n"
+            "  - label: EXACTLY the topic label from above (e.g. 'marketing + value')\n"
+            "  - narrative: 2-4 sentences (second-person) about this topic\n"
+            "  - image_steps: EXACTLY 2 objects with:\n"
+            "      - step_label: short label for the diagram\n"
+            "      - prompt: DETAILED description of what to draw (specific elements, "
+            "        layout, labels, distinct icons per concept)\n\n"
+            'Return JSON: {"beats": [{"label": "...", "narrative": "...", '
+            '"image_steps": [{"step_label": "...", "prompt": "..."}, '
+            '{"step_label": "...", "prompt": "..."}]}, ...]}\n\n'
+            f"SOURCE TEXT:\n{source_text[:8000]}"
         ),
     )
-    beats_raw = result.get("beats", [])
-    if not isinstance(beats_raw, list) or not beats_raw:
-        return {**state, "story_beats": []}
 
+    beats_raw = result.get("beats", [])
+    if not isinstance(beats_raw, list):
+        beats_raw = []
+
+    # Build beats from LLM output, indexed by position
     beats: list[dict[str, Any]] = []
-    for b in beats_raw[:10]:
+    for b in beats_raw:
         raw_steps = b.get("image_steps", [])
         image_steps: list[dict[str, Any]] = []
-        for s in raw_steps[:3]:
+        for s in raw_steps[:2]:
             image_steps.append({
                 "step_label": str(s.get("step_label", "")).strip(),
                 "prompt": str(s.get("prompt", "")).strip(),
                 "image_data": "",
             })
-        while len(image_steps) < 3:
+        while len(image_steps) < 2:
             image_steps.append({"step_label": "", "prompt": "", "image_data": ""})
         beats.append({
             "label": str(b.get("label", "")).strip(),
             "narrative": str(b.get("narrative", "")).strip(),
-            "is_decision": bool(b.get("is_decision", False)),
-            "choices": [str(c).strip() for c in b.get("choices", []) if str(c).strip()],
+            "is_decision": False,
+            "choices": [],
             "image_steps": image_steps,
         })
 
+    # If LLM returned fewer beats than topics, create placeholder beats for missing ones
+    if len(beats) < len(topic_cards):
+        existing_labels = {b["label"].lower() for b in beats}
+        for idx, card in enumerate(topic_cards):
+            topics = card.get("topics", [])
+            label = " + ".join(str(t).strip() for t in topics if str(t).strip()) or str(card.get("title", f"Topic {idx+1}")).strip()
+            if label.lower() not in existing_labels:
+                beats.append({
+                    "label": label,
+                    "narrative": "",
+                    "is_decision": False,
+                    "choices": [],
+                    "image_steps": [
+                        {"step_label": f"{label} overview", "prompt": f"Educational diagram showing the key components and relationships of {label}. Clear vector style, distinct labeled elements, no clutter.", "image_data": ""},
+                        {"step_label": f"{label} in practice", "prompt": f"Educational diagram showing how {label} works in practice with a concrete example. Crisp vector illustration with labeled steps.", "image_data": ""},
+                    ],
+                })
+
+    # Generate images for all steps in parallel
     def _gen_step_image(beat_idx: int, step_idx: int, prompt_text: str) -> tuple[int, int, str | None]:
         if not prompt_text:
             return beat_idx, step_idx, None
@@ -1112,7 +1134,8 @@ def generate_story_visuals(state: PipelineState) -> PipelineState:
         for si, step in enumerate(beat["image_steps"]):
             if step.get("prompt"):
                 jobs.append((bi, si, step["prompt"]))
-    with ThreadPoolExecutor(max_workers=3) as pool:
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(_gen_step_image, bi, si, p) for bi, si, p in jobs]
         for future in as_completed(futures):
             try:
@@ -1121,6 +1144,7 @@ def generate_story_visuals(state: PipelineState) -> PipelineState:
                     beats[bi]["image_steps"][si]["image_data"] = img
             except Exception:
                 pass
+
     return {**state, "story_beats": beats}
 
 
