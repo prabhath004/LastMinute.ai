@@ -14,6 +14,7 @@ import type {
   ChecklistItem,
   HintLevel,
   MisconceptionLogEntry,
+  TopicQuiz,
   TopicStorylineCard,
 } from "@/types";
 import type { StoryBeat } from "@/app/api/upload/route";
@@ -32,6 +33,106 @@ interface RecentSessionItem {
   updatedAt: number;
 }
 
+interface QuizAttemptState {
+  selectedIndex: number | null;
+  submitted: boolean;
+  isCorrect: boolean | null;
+  feedback: string;
+  openAnswer: string;
+  openSubmitted: boolean;
+  openPassed: boolean;
+  openFeedback: string;
+  attempts: number;
+}
+
+interface WeakConceptItem {
+  name: string;
+  misses: number;
+}
+
+function defaultQuizAttempt(): QuizAttemptState {
+  return {
+    selectedIndex: null,
+    submitted: false,
+    isCorrect: null,
+    feedback: "",
+    openAnswer: "",
+    openSubmitted: false,
+    openPassed: false,
+    openFeedback: "",
+    attempts: 0,
+  };
+}
+
+function normalizeQuizFromRaw(
+  raw: unknown,
+  fallbackFocus: string,
+  fallbackTitle: string
+): TopicQuiz | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  const question = String(value.question ?? "").trim();
+  const options = Array.isArray(value.options)
+    ? value.options.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  if (!question || options.length < 2) return undefined;
+
+  const parsedCorrectIndex = Number.parseInt(
+    String(value.correctIndex ?? value.correct_index ?? 0),
+    10
+  );
+  const correctIndex = Number.isFinite(parsedCorrectIndex)
+    ? Math.max(0, Math.min(options.length - 1, parsedCorrectIndex))
+    : 0;
+
+  return {
+    question,
+    options,
+    correctIndex,
+    explanation:
+      String(value.explanation ?? "").trim() ||
+      "Great correction. Keep this reasoning pattern.",
+    misconception:
+      String(value.misconception ?? "").trim() ||
+      "Not quite yet. Re-check the concept chain and try once more.",
+    focusConcept:
+      String(value.focusConcept ?? value.focus_concept ?? "").trim() ||
+      fallbackFocus ||
+      fallbackTitle,
+    openQuestion:
+      String(value.openQuestion ?? value.open_question ?? "").trim() ||
+      `In 2-4 lines, explain how you would solve ${fallbackFocus || fallbackTitle} in an exam.`,
+    openModelAnswer:
+      String(value.openModelAnswer ?? value.open_model_answer ?? "").trim() ||
+      "",
+  };
+}
+
+function buildFallbackQuiz(
+  card: Pick<TopicStorylineCard, "title" | "topics" | "subtopics">
+): TopicQuiz {
+  const leadTopic = card.topics[0] || card.subtopics[0] || "this concept";
+  const secondTopic = card.topics[1] || leadTopic;
+  return {
+    question: `In a timed question combining ${leadTopic} and ${secondTopic}, what should you do first?`,
+    options: [
+      `Anchor your reasoning in ${leadTopic}, then connect to ${secondTopic}.`,
+      "Jump to a final answer without building the logic chain.",
+      "Ignore one of the two topics and solve with shortcuts only.",
+      "Memorize one definition and skip the worked reasoning.",
+    ],
+    correctIndex: 0,
+    explanation:
+      "Correct. Build from the core concept first, then connect the paired concept with clear steps.",
+    misconception:
+      "This misses the reasoning sequence. Start from the core concept and then connect both topics explicitly.",
+    focusConcept: leadTopic,
+    openQuestion: `In 2-4 lines, explain how you would apply ${leadTopic} and ${secondTopic} step-by-step in an exam question.`,
+    openModelAnswer:
+      `Start from ${leadTopic}, then connect it to ${secondTopic} with one concrete reasoning step and a clear conclusion.`,
+  };
+}
+
 export default function WorkspacePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -44,7 +145,13 @@ export default function WorkspacePage() {
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [hints, setHints] = useState<HintLevel[]>([]);
-  const [misconceptions] = useState<MisconceptionLogEntry[]>([]);
+  const [misconceptions, setMisconceptions] = useState<MisconceptionLogEntry[]>([]);
+  const [quizAttempts, setQuizAttempts] = useState<Record<number, QuizAttemptState>>(
+    {}
+  );
+  const [weakConceptMisses, setWeakConceptMisses] = useState<Record<string, number>>(
+    {}
+  );
   const [tutorContext, setTutorContext] = useState("");
   const [storytelling, setStorytelling] = useState("");
   const [storyTitle, setStoryTitle] = useState("Mission Story");
@@ -59,6 +166,7 @@ export default function WorkspacePage() {
   const annotationStore = useCreateAnnotationStore();
   const [voxiOpenTrigger, setVoxiOpenTrigger] = useState(0);
   const [voxiIsOpen, setVoxiIsOpen] = useState(false);
+  const [lessonVoiceListening, setLessonVoiceListening] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const lessonColumnRef = useRef<HTMLDivElement>(null);
 
@@ -91,7 +199,7 @@ export default function WorkspacePage() {
 
   useWakeWord({
     onWake: handleWakeWord,
-    disabled: voxiIsOpen,
+    disabled: voxiIsOpen || lessonVoiceListening,
   });
 
   const readRecentSessions = useCallback((): RecentSessionItem[] => {
@@ -152,6 +260,9 @@ export default function WorkspacePage() {
       setErrorMsg("");
       setChecklist([]);
       setHints([]);
+      setMisconceptions([]);
+      setQuizAttempts({});
+      setWeakConceptMisses({});
       setTutorContext("");
       setStorytelling("");
       setStoryTitle("Mission Story");
@@ -209,30 +320,60 @@ export default function WorkspacePage() {
             ? session.interactive_story.title.trim()
             : "Mission Story"
         );
-        const cards = Array.isArray(session.interactive_story?.topic_storylines)
+        const cards: TopicStorylineCard[] = Array.isArray(
+          session.interactive_story?.topic_storylines
+        )
           ? session.interactive_story.topic_storylines
               .filter(
                 (item: unknown) => !!item && typeof item === "object"
               )
-              .map((item: Record<string, unknown>, idx: number) => ({
-                title: String(item.title ?? `Story Card ${idx + 1}`),
-                topics: Array.isArray(item.topics)
-                  ? item.topics.map((t) => String(t).trim()).filter(Boolean)
-                  : [],
-                importance: String(item.importance ?? "medium").toLowerCase(),
-                subtopics: Array.isArray(item.subtopics)
-                  ? item.subtopics.map((s) => String(s).trim()).filter(Boolean)
-                  : [],
-                story: String(item.story ?? "").trim(),
-                friend_explainers: Array.isArray(item.friend_explainers)
-                  ? item.friend_explainers
-                      .map((s) => String(s).trim())
-                      .filter(Boolean)
-                  : [],
-              }))
+              .map((item: Record<string, unknown>, idx: number) => {
+                const baseCard: TopicStorylineCard = {
+                  title: String(item.title ?? `Story Card ${idx + 1}`),
+                  topics: Array.isArray(item.topics)
+                    ? item.topics.map((t) => String(t).trim()).filter(Boolean)
+                    : [],
+                  importance: String(item.importance ?? "medium").toLowerCase(),
+                  subtopics: Array.isArray(item.subtopics)
+                    ? item.subtopics.map((s) => String(s).trim()).filter(Boolean)
+                    : [],
+                  story: String(item.story ?? "").trim(),
+                  micro_explanations: (() => {
+                    const rawMicro = item.micro_explanations ?? item.microExplanations;
+                    return Array.isArray(rawMicro)
+                      ? rawMicro.map((entry) => String(entry).trim()).filter(Boolean)
+                      : [];
+                  })(),
+                  friend_explainers: Array.isArray(item.friend_explainers)
+                    ? item.friend_explainers
+                        .map((s) => String(s).trim())
+                        .filter(Boolean)
+                    : [],
+                };
+                const parsedQuiz = normalizeQuizFromRaw(
+                  item.quiz ?? item.topic_quiz,
+                  baseCard.topics[0] ?? "",
+                  baseCard.title
+                );
+                return {
+                  ...baseCard,
+                  quiz: parsedQuiz ?? buildFallbackQuiz(baseCard),
+                };
+              })
               .filter((item: TopicStorylineCard) => item.story.length > 0)
           : [];
         setTopicStorylines(cards);
+        setQuizAttempts(() => {
+          const next: Record<number, QuizAttemptState> = {};
+          cards.forEach((card, idx) => {
+            if (card.quiz) {
+              next[idx] = defaultQuizAttempt();
+            }
+          });
+          return next;
+        });
+        setMisconceptions([]);
+        setWeakConceptMisses({});
         setStoryBeats(Array.isArray(session.story_beats) ? session.story_beats : []);
         setActiveTopicId(cards[0] ? `story-${0}` : null);
         upsertRecentSession({
@@ -322,6 +463,9 @@ export default function WorkspacePage() {
         setErrorMsg("");
         setChecklist([]);
         setHints([]);
+        setMisconceptions([]);
+        setQuizAttempts({});
+        setWeakConceptMisses({});
         setTutorContext("");
         setStorytelling("");
         setStoryTitle("Mission Story");
@@ -339,6 +483,9 @@ export default function WorkspacePage() {
     setErrorMsg("");
     setChecklist([]);
     setHints([]);
+    setMisconceptions([]);
+    setQuizAttempts({});
+    setWeakConceptMisses({});
     setTutorContext("");
     setStorytelling("");
     setStoryTitle("Mission Story");
@@ -352,6 +499,9 @@ export default function WorkspacePage() {
     setErrorMsg("");
     setChecklist([]);
     setHints([]);
+    setMisconceptions([]);
+    setQuizAttempts({});
+    setWeakConceptMisses({});
     setTutorContext("");
     setStorytelling("");
     setStoryTitle("Mission Story");
@@ -372,7 +522,25 @@ export default function WorkspacePage() {
       ? parsedStoryIndex
       : 0;
   const canGoPrevStory = currentStoryIndex > 0;
-  const canGoNextStory = currentStoryIndex < topicStorylines.length - 1;
+  const currentCard = topicStorylines[currentStoryIndex];
+  const currentCardQuiz = currentCard?.quiz;
+  const currentQuizAttempt = quizAttempts[currentStoryIndex];
+  const currentTopicPassed =
+    !currentCardQuiz ||
+    (currentQuizAttempt?.isCorrect === true &&
+      (!currentCardQuiz.openQuestion || currentQuizAttempt?.openPassed === true));
+  const canGoNextStory =
+    currentStoryIndex < topicStorylines.length - 1 && currentTopicPassed;
+
+  const weakConcepts: WeakConceptItem[] = useMemo(
+    () =>
+      Object.entries(weakConceptMisses)
+        .filter(([, misses]) => misses > 0)
+        .map(([name, misses]) => ({ name, misses }))
+        .sort((a, b) => b.misses - a.misses)
+        .slice(0, 8),
+    [weakConceptMisses]
+  );
 
   /** Current slide image for Voxi "Draw on slide" (first image of current topic) */
   const currentSlideImage = useMemo(() => {
@@ -406,7 +574,254 @@ export default function WorkspacePage() {
     });
   }, []);
 
+  const handleQuizOptionSelect = useCallback((topicIdx: number, optionIdx: number) => {
+    setQuizAttempts((prev) => ({
+      ...prev,
+      [topicIdx]: {
+        ...(prev[topicIdx] ?? defaultQuizAttempt()),
+        selectedIndex: optionIdx,
+        submitted: false,
+        isCorrect: null,
+        feedback: "",
+      },
+    }));
+  }, []);
+
+  const handleOpenAnswerChange = useCallback((topicIdx: number, value: string) => {
+    setQuizAttempts((prev) => ({
+      ...prev,
+      [topicIdx]: {
+        ...(prev[topicIdx] ?? defaultQuizAttempt()),
+        openAnswer: value,
+        openSubmitted: false,
+        openPassed: false,
+        openFeedback: "",
+      },
+    }));
+  }, []);
+
+  const handleOpenAnswerSubmit = useCallback(
+    (topicIdx: number) => {
+      const card = topicStorylines[topicIdx];
+      if (!card?.quiz) return;
+      const attempt = quizAttempts[topicIdx] ?? defaultQuizAttempt();
+      const rawAnswer = attempt.openAnswer.trim();
+      if (!rawAnswer) return;
+
+      const normalizedAnswer = rawAnswer.toLowerCase();
+      const words = normalizedAnswer
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+      const focusTerm = (card.quiz.focusConcept || card.topics[0] || "").toLowerCase();
+      const topicTerms = [focusTerm, ...card.topics.map((topic) => topic.toLowerCase())].filter(
+        Boolean
+      );
+      const hasTopicReference = topicTerms.some((term) => normalizedAnswer.includes(term));
+      const genericTokens = new Set([
+        "this",
+        "that",
+        "with",
+        "from",
+        "your",
+        "into",
+        "then",
+        "than",
+        "give",
+        "example",
+        "would",
+        "should",
+        "could",
+        "model",
+        "models",
+        "training",
+        "accuracy",
+        "classification",
+        "data",
+        "task",
+        "using",
+        "used",
+        "answer",
+        "question",
+        "concept",
+        "concepts",
+      ]);
+      const extractKeywords = (text: string, minLen: number) =>
+        text
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .split(/\s+/)
+          .filter((token) => token.length >= minLen && !genericTokens.has(token));
+      const keywordSource = [
+        card.quiz.openQuestion ?? "",
+        card.quiz.openModelAnswer ?? "",
+        card.quiz.question ?? "",
+        ...card.topics,
+        ...card.subtopics,
+      ]
+        .join(" ");
+      const keywordSet = new Set(extractKeywords(keywordSource, 4));
+      const modelSignalKeywords = extractKeywords(
+        [
+          card.quiz.openModelAnswer ?? "",
+          card.quiz.explanation ?? "",
+          card.quiz.misconception ?? "",
+          focusTerm,
+        ].join(" "),
+        6
+      );
+      const keywordHits = words.filter((token) => keywordSet.has(token)).length;
+      const modelKeywordHits = new Set(
+        words.filter((token) =>
+          modelSignalKeywords.some(
+            (signal) =>
+              token === signal || token.startsWith(signal) || signal.startsWith(token)
+          )
+        )
+      ).size;
+      const hasReasoningSignal =
+        /because|therefore|then|so that|which means|first|next|finally/.test(
+          normalizedAnswer
+        );
+      const longEnough = rawAnswer.length >= 45 || words.length >= 8;
+      const standardPass =
+        longEnough &&
+        (hasTopicReference || hasReasoningSignal || keywordHits >= 2);
+      const conciseConceptPass =
+        !longEnough && words.length <= 4 && modelKeywordHits >= 1;
+      const isPass = standardPass || conciseConceptPass;
+
+      const openFeedback = isPass
+        ? conciseConceptPass
+          ? "Correct core concept. Add one supporting sentence next time for full reasoning."
+          : "Good open response. You explained the reasoning chain clearly."
+        : card.quiz.openModelAnswer
+          ? `Remember: ${card.quiz.openModelAnswer}`
+          : "Remember: start from the core concept, then explain each step in order.";
+
+      setQuizAttempts((prev) => ({
+        ...prev,
+        [topicIdx]: {
+          ...(prev[topicIdx] ?? defaultQuizAttempt()),
+          openAnswer: rawAnswer,
+          openSubmitted: true,
+          openPassed: isPass,
+          openFeedback,
+        },
+      }));
+
+      if (isPass) {
+        if (focusTerm) {
+          setWeakConceptMisses((prev) => {
+            const current = prev[focusTerm] ?? 0;
+            if (current <= 1) {
+              const next = { ...prev };
+              delete next[focusTerm];
+              return next;
+            }
+            return { ...prev, [focusTerm]: current - 1 };
+          });
+        }
+        setChecklist((items) =>
+          items.map((item, checklistIdx) =>
+            checklistIdx === topicIdx ? { ...item, done: true } : item
+          )
+        );
+        return;
+      }
+
+      if (focusTerm) {
+        setWeakConceptMisses((prev) => ({
+          ...prev,
+          [focusTerm]: (prev[focusTerm] ?? 0) + 1,
+        }));
+      }
+
+      const misconceptionText = `Open response needs stronger reasoning. ${openFeedback}`;
+      setMisconceptions((prev) => [
+        {
+          id: `${topicIdx}-open-${Date.now()}`,
+          text: misconceptionText,
+          topicId: `story-${topicIdx}`,
+        },
+        ...prev,
+      ].slice(0, 20));
+    },
+    [quizAttempts, topicStorylines]
+  );
+
+  const handleQuizSubmit = useCallback(
+    (topicIdx: number) => {
+      const card = topicStorylines[topicIdx];
+      if (!card?.quiz) return;
+      const attempt = quizAttempts[topicIdx] ?? defaultQuizAttempt();
+      if (attempt.selectedIndex === null) return;
+
+      const isCorrect = attempt.selectedIndex === card.quiz.correctIndex;
+      const feedback = isCorrect ? card.quiz.explanation : card.quiz.misconception;
+      const focusConcept = (card.quiz.focusConcept || card.topics[0] || card.title || "")
+        .trim()
+        .toLowerCase();
+
+      setQuizAttempts((prev) => ({
+        ...prev,
+        [topicIdx]: {
+          ...(prev[topicIdx] ?? defaultQuizAttempt()),
+          selectedIndex: attempt.selectedIndex,
+          submitted: true,
+          isCorrect,
+          feedback,
+          attempts: (prev[topicIdx]?.attempts ?? 0) + 1,
+        },
+      }));
+
+      if (isCorrect) {
+        if (!card.quiz.openQuestion) {
+          setChecklist((items) =>
+            items.map((item, checklistIdx) =>
+              checklistIdx === topicIdx ? { ...item, done: true } : item
+            )
+          );
+        }
+        if (focusConcept) {
+          setWeakConceptMisses((prev) => {
+            const current = prev[focusConcept] ?? 0;
+            if (current <= 1) {
+              const next = { ...prev };
+              delete next[focusConcept];
+              return next;
+            }
+            return { ...prev, [focusConcept]: current - 1 };
+          });
+        }
+        return;
+      }
+
+      if (focusConcept) {
+        setWeakConceptMisses((prev) => ({
+          ...prev,
+          [focusConcept]: (prev[focusConcept] ?? 0) + 1,
+        }));
+      }
+
+      const misconceptionText = card.quiz.misconception || "Review this topic and try once more.";
+      const rememberNote = card.quiz.explanation
+        ? ` Remember: ${card.quiz.explanation}`
+        : "";
+      setMisconceptions((prev) => [
+        {
+          id: `${topicIdx}-${Date.now()}`,
+          text: `${misconceptionText}${rememberNote}`,
+          topicId: `story-${topicIdx}`,
+        },
+        ...prev,
+      ].slice(0, 20));
+    },
+    [quizAttempts, topicStorylines]
+  );
+
   const handleNextStory = useCallback(() => {
+    if (!currentTopicPassed) return;
     setActiveTopicId((prev) => {
       const idx =
         prev && prev.startsWith("story-")
@@ -421,7 +836,7 @@ export default function WorkspacePage() {
       const next = Math.min(topicStorylines.length - 1, safeIdx + 1);
       return `story-${Math.max(0, next)}`;
     });
-  }, [topicStorylines.length]);
+  }, [currentTopicPassed, topicStorylines.length]);
 
   /* ---- loading ---- */
   if (loadState === "loading") {
@@ -454,7 +869,12 @@ export default function WorkspacePage() {
   }
 
   /* ---- workspace ---- */
-  const completedCount = checklist.filter((item) => item.done).length;
+  const completedCount = topicStorylines.reduce((acc, card, idx) => {
+    if (!card.quiz) return acc + 1;
+    const attempt = quizAttempts[idx];
+    const openReady = !card.quiz.openQuestion || attempt?.openPassed;
+    return acc + (attempt?.isCorrect && openReady ? 1 : 0);
+  }, 0);
 
   return (
     <AnnotationStoreContext.Provider value={annotationStore}>
@@ -500,13 +920,22 @@ export default function WorkspacePage() {
                   missionTitle={storyTitle}
                   missionStory={storytelling}
                   topicStorylines={topicStorylines}
+                  quizAttempts={quizAttempts}
                   storyBeats={storyBeats}
                   currentStoryIndex={currentStoryIndex}
                   totalStories={topicStorylines.length}
                   canGoPrevStory={canGoPrevStory}
                   canGoNextStory={canGoNextStory}
+                  currentTopicPassed={currentTopicPassed}
+                  requireQuizToAdvance={Boolean(currentCardQuiz)}
                   onPrevStory={handlePrevStory}
                   onNextStory={handleNextStory}
+                  onQuizOptionSelect={handleQuizOptionSelect}
+                  onQuizSubmit={handleQuizSubmit}
+                  onOpenAnswerChange={handleOpenAnswerChange}
+                  onOpenAnswerSubmit={handleOpenAnswerSubmit}
+                  disableVoiceInput={voxiIsOpen}
+                  onVoiceListeningChange={setLessonVoiceListening}
                   loading={false}
                 />
                 {drawMode && (
@@ -535,6 +964,7 @@ export default function WorkspacePage() {
             hints={hints}
             onRevealHint={handleRevealHint}
             misconceptions={misconceptions}
+            weakConcepts={weakConcepts}
             tutorContext={tutorContext}
             completedSteps={completedCount}
             totalSteps={topicStorylines.length}

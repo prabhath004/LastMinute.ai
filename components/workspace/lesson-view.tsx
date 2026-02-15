@@ -1,23 +1,45 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
 import type { TopicStorylineCard } from "@/types";
 import type { StoryBeat } from "@/app/api/upload/route";
-import { ChevronLeft, ChevronRight, Loader2, ImageIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Mic, MicOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useVoiceInput } from "@/hooks/use-voice-input";
 
 interface LessonViewProps {
   activeTopicId: string | null;
   missionTitle: string;
   missionStory: string;
   topicStorylines: TopicStorylineCard[];
+  quizAttempts: Record<
+    number,
+    {
+      selectedIndex: number | null;
+      submitted: boolean;
+      isCorrect: boolean | null;
+      feedback: string;
+      openAnswer: string;
+      openSubmitted: boolean;
+      openPassed: boolean;
+      openFeedback: string;
+    }
+  >;
   storyBeats: StoryBeat[];
   currentStoryIndex: number;
   totalStories: number;
   canGoPrevStory: boolean;
   canGoNextStory: boolean;
+  currentTopicPassed: boolean;
+  requireQuizToAdvance: boolean;
   onPrevStory: () => void;
   onNextStory: () => void;
+  onQuizOptionSelect: (topicIdx: number, optionIdx: number) => void;
+  onQuizSubmit: (topicIdx: number) => void;
+  onOpenAnswerChange: (topicIdx: number, value: string) => void;
+  onOpenAnswerSubmit: (topicIdx: number) => void;
+  disableVoiceInput?: boolean;
+  onVoiceListeningChange?: (isListening: boolean) => void;
   loading: boolean;
 }
 
@@ -42,73 +64,39 @@ function findBeatsForTopic(
   });
 }
 
-/** Render a single story beat with its images */
-function StoryBeatImages({ beat }: { beat: StoryBeat }) {
-  const images = beat.image_steps.filter((s) => s.image_data);
-  if (images.length === 0) return null;
-
-  return (
-    <div className="mt-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
-        <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-          Visual — {beat.label}
-        </p>
-      </div>
-      {beat.narrative && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {beat.narrative}
-        </p>
-      )}
-      <div
-        className={cn(
-          "grid gap-3",
-          images.length === 1
-            ? "grid-cols-1"
-            : images.length === 2
-              ? "grid-cols-2"
-              : "grid-cols-1 sm:grid-cols-3"
-        )}
-      >
-        {images.map((step, idx) => (
-          <div
-            key={`${beat.label}-step-${idx}`}
-            className="overflow-hidden rounded-lg border border-border bg-muted/20"
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={step.image_data}
-              alt={step.step_label || `${beat.label} diagram ${idx + 1}`}
-              className="h-auto w-full object-contain"
-              draggable={false}
-            />
-            {step.step_label && (
-              <p className="border-t border-border bg-muted/30 px-2.5 py-1.5 text-[10px] text-muted-foreground">
-                {step.step_label}
-              </p>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export function LessonView({
   activeTopicId,
   missionTitle,
   missionStory,
   topicStorylines,
+  quizAttempts,
   storyBeats,
   currentStoryIndex,
   totalStories,
   canGoPrevStory,
   canGoNextStory,
+  currentTopicPassed,
+  requireQuizToAdvance,
   onPrevStory,
   onNextStory,
+  onQuizOptionSelect,
+  onQuizSubmit,
+  onOpenAnswerChange,
+  onOpenAnswerSubmit,
+  disableVoiceInput = false,
+  onVoiceListeningChange,
   loading,
 }: LessonViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [activeSlideIndex, setActiveSlideIndex] = useState(0);
+  const {
+    isSupported: voiceSupported,
+    isListening: isVoiceListening,
+    transcript: voiceTranscript,
+    startListening: startVoiceListening,
+    stopListening: stopVoiceListening,
+    clearTranscript: clearVoiceTranscript,
+  } = useVoiceInput();
   const cleanCardTitle = (rawTitle: string, fallback: string) => {
     const cleaned = rawTitle
       .replace(/^explanation\s*[-—:]\s*/i, "")
@@ -128,6 +116,36 @@ export function LessonView({
       }
     }
   }, [activeTopicId]);
+
+  useEffect(() => {
+    if (isVoiceListening || !voiceTranscript.trim()) return;
+    onOpenAnswerChange(currentStoryIndex, voiceTranscript.trim());
+    clearVoiceTranscript();
+  }, [
+    isVoiceListening,
+    voiceTranscript,
+    currentStoryIndex,
+    onOpenAnswerChange,
+    clearVoiceTranscript,
+  ]);
+
+  useEffect(() => {
+    onVoiceListeningChange?.(isVoiceListening);
+  }, [isVoiceListening, onVoiceListeningChange]);
+
+  useEffect(() => {
+    return () => onVoiceListeningChange?.(false);
+  }, [onVoiceListeningChange]);
+
+  useEffect(() => {
+    if (disableVoiceInput && isVoiceListening) {
+      stopVoiceListening();
+    }
+  }, [disableVoiceInput, isVoiceListening, stopVoiceListening]);
+
+  useEffect(() => {
+    setActiveSlideIndex(0);
+  }, [currentStoryIndex]);
 
   if (loading) {
     return (
@@ -205,6 +223,32 @@ export function LessonView({
   }
 
   const currentBeats = beatsByTopicIndex.get(currentStoryIndex) ?? [];
+  const currentBeatImages = currentBeats
+    .flatMap((beat) => beat.image_steps)
+    .filter((step) => step.image_data)
+    .slice(0, 4);
+  const currentCard = topicStorylines[currentStoryIndex];
+  const storySlides = useMemo(() => {
+    const storyText = String(currentCard?.story ?? "").trim();
+    if (!storyText) return [];
+    const paragraphs = storyText
+      .split(/\n{2,}/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 25);
+    if (paragraphs.length > 0) return paragraphs.slice(0, 8);
+
+    const sentences = storyText
+      .split(/(?<=[.!?])\s+/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 15);
+    const grouped: string[] = [];
+    for (let idx = 0; idx < sentences.length; idx += 2) {
+      grouped.push([sentences[idx], sentences[idx + 1]].filter(Boolean).join(" "));
+    }
+    return grouped.slice(0, 8);
+  }, [currentCard?.story]);
+  const safeSlideIndex = Math.max(0, Math.min(activeSlideIndex, Math.max(storySlides.length - 1, 0)));
+  const onLastSlide = storySlides.length === 0 || safeSlideIndex >= storySlides.length - 1;
 
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto">
@@ -223,93 +267,211 @@ export function LessonView({
               .filter((_, idx) => idx === currentStoryIndex)
               .map((card) => {
               const absoluteIdx = currentStoryIndex;
-              const importance = card.importance?.toLowerCase?.() ?? "medium";
-              const importanceClass =
-                importance === "high"
-                  ? "border-foreground/50 bg-foreground/5 text-foreground"
-                  : importance === "low"
-                    ? "border-border bg-muted text-muted-foreground"
-                    : "border-border bg-background text-foreground";
+              const quizAttempt = quizAttempts[absoluteIdx];
+              const currentSlide = storySlides[safeSlideIndex] || "";
               return (
                 <article
                   key={`${card.title}-${absoluteIdx}`}
                   data-topic-id={`story-${absoluteIdx}`}
                   className="rounded-lg border border-border bg-background p-5"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <h3 className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-                      Explanation —{" "}
-                      {cleanCardTitle(card.title || "", `Focus Area ${absoluteIdx + 1}`)}
-                    </h3>
-                    <span
-                      className={cn(
-                        "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
-                        importanceClass
-                      )}
-                    >
-                      {importance.toUpperCase()}
-                    </span>
+                  <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                    {cleanCardTitle(card.title || "", `Focus Area ${absoluteIdx + 1}`)}
+                  </h3>
+
+                  <div className="mt-4 rounded-md border border-border bg-muted/20 p-4">
+                    <p className="whitespace-pre-line text-sm leading-relaxed text-foreground">
+                      {currentSlide || card.story}
+                    </p>
+                    {currentBeatImages[safeSlideIndex]?.image_data && (
+                      <div className="mt-3 overflow-hidden rounded-md border border-border bg-background">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={currentBeatImages[safeSlideIndex].image_data}
+                          alt={
+                            currentBeatImages[safeSlideIndex].step_label ||
+                            `${card.title} visual ${safeSlideIndex + 1}`
+                          }
+                          className="h-auto w-full object-contain"
+                          draggable={false}
+                        />
+                      </div>
+                    )}
+                    {storySlides.length > 1 && (
+                      <div className="mt-3 flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">
+                          Story slide {safeSlideIndex + 1} / {storySlides.length}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setActiveSlideIndex((prev) => Math.max(0, prev - 1))}
+                            disabled={safeSlideIndex === 0}
+                            className={cn(
+                              "rounded-md border px-2.5 py-1 text-xs transition-colors",
+                              safeSlideIndex === 0
+                                ? "cursor-not-allowed border-border text-muted-foreground/40"
+                                : "border-border text-foreground hover:bg-muted"
+                            )}
+                          >
+                            Prev Slide
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setActiveSlideIndex((prev) =>
+                                Math.min(storySlides.length - 1, prev + 1)
+                              )
+                            }
+                            disabled={safeSlideIndex >= storySlides.length - 1}
+                            className={cn(
+                              "rounded-md border px-2.5 py-1 text-xs transition-colors",
+                              safeSlideIndex >= storySlides.length - 1
+                                ? "cursor-not-allowed border-border text-muted-foreground/40"
+                                : "border-border text-foreground hover:bg-muted"
+                            )}
+                          >
+                            Next Slide
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {card.topics.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {card.topics.map((topic) => (
-                        <span
-                          key={topic}
-                          className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground"
-                        >
-                          {topic}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {card.subtopics.length > 0 && (
-                    <ul className="mt-3 space-y-1.5">
-                      {card.subtopics.map((subtopic, subIdx) => (
-                        <li
-                          key={`${subtopic}-${subIdx}`}
-                          className="text-sm text-muted-foreground"
-                        >
-                          • {subtopic}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-
-                  <p className="mt-4 whitespace-pre-line text-sm leading-relaxed text-foreground">
-                    {card.story}
-                  </p>
-
-                  {/* ---- Story beat images for this topic ---- */}
-                  {currentBeats.length > 0 && (
-                    <div className="mt-5 space-y-4 border-t border-border pt-4">
-                      {currentBeats.map((beat, beatIdx) => (
-                        <StoryBeatImages
-                          key={`beat-${beat.label}-${beatIdx}`}
-                          beat={beat}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {card.friend_explainers && card.friend_explainers.length > 0 && (
-                    <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
-                      <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                        Friend-style explainers
+                  {card.quiz && onLastSlide && (
+                    <div className="mt-5 rounded-lg border border-border bg-muted/20 p-4">
+                      <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                        Checkpoint Quiz
                       </p>
-                      <ul className="space-y-1.5">
-                        {card.friend_explainers.map((line, lineIdx) => (
-                          <li
-                            key={`${line}-${lineIdx}`}
-                            className="text-sm text-muted-foreground"
+                      <p className="mt-2 text-sm text-foreground">{card.quiz.question}</p>
+                      <div className="mt-3 space-y-2">
+                        {card.quiz.options.map((option, optionIdx) => {
+                          const selected = quizAttempt?.selectedIndex === optionIdx;
+                          return (
+                            <button
+                              key={`${absoluteIdx}-quiz-option-${optionIdx}`}
+                              type="button"
+                              onClick={() => onQuizOptionSelect(absoluteIdx, optionIdx)}
+                              className={cn(
+                                "w-full rounded-md border px-3 py-2 text-left text-xs transition-colors",
+                                selected
+                                  ? "border-foreground bg-foreground/5 text-foreground"
+                                  : "border-border text-muted-foreground hover:bg-muted"
+                              )}
+                            >
+                              <span className="font-medium text-foreground">{optionIdx + 1}.</span>{" "}
+                              {option}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onQuizSubmit(absoluteIdx)}
+                          disabled={quizAttempt?.selectedIndex === null || quizAttempt?.selectedIndex === undefined}
+                          className={cn(
+                            "rounded-md border px-3 py-1.5 text-xs transition-colors",
+                            quizAttempt?.selectedIndex === null || quizAttempt?.selectedIndex === undefined
+                              ? "cursor-not-allowed border-border text-muted-foreground/40"
+                              : "border-foreground bg-foreground text-background hover:bg-foreground/90"
+                          )}
+                        >
+                          Check Answer
+                        </button>
+                        {quizAttempt?.submitted && (
+                          <span
+                            className={cn(
+                              "text-xs",
+                              quizAttempt.isCorrect ? "text-foreground" : "text-muted-foreground"
+                            )}
                           >
-                            • {line}
-                          </li>
-                        ))}
-                      </ul>
+                            {quizAttempt.isCorrect ? "Correct, topic unlocked." : "Not yet, review and retry."}
+                          </span>
+                        )}
+                      </div>
+                      {quizAttempt?.submitted && quizAttempt.feedback && (
+                        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                          {quizAttempt.feedback}
+                        </p>
+                      )}
+                      {card.quiz.openQuestion && (
+                        <div className="mt-4 space-y-2 border-t border-border pt-3">
+                          <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                            Open Answer
+                          </p>
+                          <p className="text-xs text-foreground">{card.quiz.openQuestion}</p>
+                          <div className="flex items-start gap-2">
+                            <textarea
+                              value={quizAttempt?.openAnswer ?? ""}
+                              onChange={(e) =>
+                                onOpenAnswerChange(absoluteIdx, e.target.value)
+                              }
+                              placeholder="Type your 2-4 line answer or use voice..."
+                              className="min-h-[88px] flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
+                            />
+                            {voiceSupported && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (disableVoiceInput) return;
+                                  if (isVoiceListening) stopVoiceListening();
+                                  else startVoiceListening();
+                                }}
+                                disabled={disableVoiceInput}
+                                className={cn(
+                                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors",
+                                  isVoiceListening
+                                    ? "border-foreground bg-foreground text-background"
+                                    : disableVoiceInput
+                                      ? "cursor-not-allowed border-border text-muted-foreground/40"
+                                      : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                                )}
+                                title={
+                                  disableVoiceInput
+                                    ? "Voice capture is paused while Voxi is open"
+                                    : isVoiceListening
+                                      ? "Stop voice capture"
+                                      : "Record voice answer"
+                                }
+                              >
+                                {isVoiceListening ? (
+                                  <MicOff className="h-4 w-4" />
+                                ) : (
+                                  <Mic className="h-4 w-4" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => onOpenAnswerSubmit(absoluteIdx)}
+                            disabled={!(quizAttempt?.openAnswer ?? "").trim()}
+                            className={cn(
+                              "rounded-md border px-3 py-1.5 text-xs transition-colors",
+                              (quizAttempt?.openAnswer ?? "").trim()
+                                ? "border-foreground bg-foreground text-background hover:bg-foreground/90"
+                                : "cursor-not-allowed border-border text-muted-foreground/40"
+                            )}
+                          >
+                            Check Open Answer
+                          </button>
+                          {quizAttempt?.openSubmitted && (
+                            <p className="text-xs text-muted-foreground">
+                              {quizAttempt.openFeedback}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
+
+                  {card.quiz && !onLastSlide && (
+                    <p className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                      Finish the story slides to unlock the checkpoint.
+                    </p>
+                  )}
+
                 </article>
               );
             })}
@@ -348,6 +510,11 @@ export function LessonView({
                 </button>
               </div>
             </div>
+            {requireQuizToAdvance && !currentTopicPassed && (
+              <p className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                Complete the checkpoint (mcq + open answer) to unlock the next topic.
+              </p>
+            )}
           </section>
         ) : missionStory.trim() && (
           <section className="mb-8 rounded-lg border border-border bg-muted/30 p-5">

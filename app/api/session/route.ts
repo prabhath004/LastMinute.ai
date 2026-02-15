@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSession, getSession } from "@/lib/session-store";
 import type { StoryBeat } from "@/app/api/upload/route";
+import type { TopicQuiz } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,37 @@ function parseStoryBeatsFromBody(raw: unknown): StoryBeat[] {
         image_steps: steps,
       };
     });
+}
+
+function parseTopicQuiz(raw: unknown): TopicQuiz | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  const options = Array.isArray(value.options)
+    ? value.options.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  if (options.length < 2) return undefined;
+
+  const parsedIndex = Number.parseInt(String(value.correct_index ?? value.correctIndex ?? 0), 10);
+  const correctIndex = Number.isFinite(parsedIndex)
+    ? Math.max(0, Math.min(options.length - 1, parsedIndex))
+    : 0;
+
+  const question = String(value.question ?? "").trim();
+  if (!question) return undefined;
+
+  return {
+    question,
+    options,
+    correctIndex,
+    explanation: String(value.explanation ?? "").trim() || "Good work. Keep moving.",
+    misconception:
+      String(value.misconception ?? "").trim() ||
+      "Not quite yet. Re-check the core logic and try again.",
+    focusConcept: String(value.focus_concept ?? value.focusConcept ?? "").trim() || undefined,
+    openQuestion: String(value.open_question ?? value.openQuestion ?? "").trim() || undefined,
+    openModelAnswer:
+      String(value.open_model_answer ?? value.openModelAnswer ?? "").trim() || undefined,
+  };
 }
 
 /**
@@ -47,22 +79,30 @@ export async function POST(request: Request) {
             .filter(
               (item: unknown) => !!item && typeof item === "object"
             )
-            .map((item: Record<string, unknown>) => ({
-              title: String(item.title ?? "").trim(),
-              topics: Array.isArray(item.topics)
-                ? item.topics.map((t) => String(t).trim()).filter(Boolean)
-                : [],
-              importance: String(item.importance ?? "medium").trim().toLowerCase(),
-              subtopics: Array.isArray(item.subtopics)
-                ? item.subtopics.map((s) => String(s).trim()).filter(Boolean)
-                : [],
-              story: String(item.story ?? "").trim(),
-              friend_explainers: Array.isArray(item.friend_explainers)
-                ? item.friend_explainers
-                    .map((s) => String(s).trim())
-                    .filter(Boolean)
-                : [],
-            }))
+            .map((item: Record<string, unknown>) => {
+              const rawMicro = item.micro_explanations ?? item.microExplanations;
+              const microExplanations = Array.isArray(rawMicro)
+                ? rawMicro.map((entry) => String(entry).trim()).filter(Boolean)
+                : [];
+              return {
+                title: String(item.title ?? "").trim(),
+                topics: Array.isArray(item.topics)
+                  ? item.topics.map((t) => String(t).trim()).filter(Boolean)
+                  : [],
+                importance: String(item.importance ?? "medium").trim().toLowerCase(),
+                subtopics: Array.isArray(item.subtopics)
+                  ? item.subtopics.map((s) => String(s).trim()).filter(Boolean)
+                  : [],
+                story: String(item.story ?? "").trim(),
+                micro_explanations: microExplanations,
+                friend_explainers: Array.isArray(item.friend_explainers)
+                  ? item.friend_explainers
+                      .map((s) => String(s).trim())
+                      .filter(Boolean)
+                  : [],
+                quiz: parseTopicQuiz(item.quiz ?? item.topic_quiz),
+              };
+            })
         : [],
     },
     final_storytelling: body.final_storytelling ?? "",

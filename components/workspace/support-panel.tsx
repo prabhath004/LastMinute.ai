@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { ChecklistItem, HintLevel, MisconceptionLogEntry } from "@/types";
-import { Check, MessageSquare, MessageCircle, Sparkles } from "lucide-react";
+import { Check, MessageCircle, Sparkles, TriangleAlert } from "lucide-react";
 import { TutorChat } from "@/components/workspace/tutor-chat";
 import { useEffect } from "react";
 
@@ -13,6 +13,7 @@ interface SupportPanelProps {
   hints: HintLevel[];
   onRevealHint: (level: number) => void;
   misconceptions: MisconceptionLogEntry[];
+  weakConcepts?: Array<{ name: string; misses: number }>;
   tutorContext: string;
   completedSteps: number;
   totalSteps: number;
@@ -35,6 +36,7 @@ export function SupportPanel({
   hints,
   onRevealHint,
   misconceptions,
+  weakConcepts = [],
   tutorContext,
   completedSteps,
   totalSteps,
@@ -47,6 +49,9 @@ export function SupportPanel({
   style,
 }: SupportPanelProps) {
   const [tutorOpen, setTutorOpen] = useState(false);
+  const handleDrawModeToggle = () => {
+    onDrawModeChange?.(!drawMode);
+  };
 
   // Open Voxi when wake-word fires (voxiOpenTrigger increments)
   useEffect(() => {
@@ -86,6 +91,30 @@ export function SupportPanel({
             />
           </div>
         </section>
+
+        {weakConcepts.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+              Focus now
+            </h3>
+            <ul className="space-y-1.5">
+              {weakConcepts.map((item) => (
+                <li
+                  key={item.name}
+                  className="flex items-center justify-between rounded-md border border-border px-2.5 py-2"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate text-xs text-foreground">{item.name}</span>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {item.misses} miss{item.misses > 1 ? "es" : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         {/* Checklist generated from pipeline */}
         <section>
@@ -176,7 +205,7 @@ export function SupportPanel({
           open={tutorOpen}
           onClose={() => setTutorOpen(false)}
           drawMode={drawMode}
-          onDrawModeToggle={onDrawModeChange}
+          onDrawModeToggle={onDrawModeChange ? handleDrawModeToggle : undefined}
           voxiOpenTrigger={voxiOpenTrigger ?? 0}
         />
       </div>

@@ -136,13 +136,26 @@ export interface InteractiveStory {
   topic_storylines?: TopicStorylineCard[];
 }
 
+export interface TopicQuiz {
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+  misconception: string;
+  focusConcept?: string;
+  openQuestion?: string;
+  openModelAnswer?: string;
+}
+
 export interface TopicStorylineCard {
   title: string;
   topics: string[];
   importance: "high" | "medium" | "low" | string;
   subtopics: string[];
   story: string;
+  micro_explanations?: string[];
   friend_explainers?: string[];
+  quiz?: TopicQuiz;
 }
 
 export interface UploadResult {

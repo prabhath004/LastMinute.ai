@@ -144,6 +144,7 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
   /* ---- when voice transcript finalizes → auto-send ---- */
   const hasSentRef = useRef(false);
   useEffect(() => {
+    if (!open) return;
     if (!isListening && transcript && !hasSentRef.current) {
       hasSentRef.current = true;
       send(transcript);
@@ -153,12 +154,6 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isListening, transcript]);
-
-  /* ---- cleanup on unmount ---- */
-  useEffect(() => {
-    return () => { stopAllAudio(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /* ================================================================ */
   /*  AUDIO: stop / cleanup / speak                                    */
@@ -254,6 +249,24 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
       if (agentStateRef.current === "speaking") setAgentState("idle");
     }
   }, [stopAllAudio]);
+
+  /* ---- close/reset when panel is hidden ---- */
+  useEffect(() => {
+    if (open) return;
+    stopListening();
+    clearTranscript();
+    stopAllAudio();
+    setAgentState("idle");
+    hasSentRef.current = false;
+  }, [open, stopListening, clearTranscript, stopAllAudio]);
+
+  /* ---- cleanup on unmount ---- */
+  useEffect(() => {
+    return () => {
+      stopListening();
+      stopAllAudio();
+    };
+  }, [stopListening, stopAllAudio]);
 
   /* ================================================================ */
   /*  SEND: works for both typed and voice input                       */

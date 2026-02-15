@@ -516,6 +516,155 @@ def _story_min_words(importance: str) -> int:
     return 450
 
 
+def _fallback_micro_explanations(topics: list[str], subtopics: list[str]) -> list[str]:
+    clean_topics = [str(t).strip() for t in topics if str(t).strip()]
+    main = clean_topics[0] if clean_topics else "core concept"
+    pair = clean_topics[1] if len(clean_topics) > 1 else main
+    cue = (
+        str(subtopics[0]).strip()
+        if subtopics and str(subtopics[0]).strip()
+        else f"the exam logic behind {main}"
+    )
+    return [
+        (
+            f"{main} is your anchor move under exam pressure. Start with {cue}, "
+            "state what it means in one line, then apply it to the question stem."
+        ),
+        (
+            f"Link {main} to {pair} in one short chain: what stays stable, what changes, "
+            "and why this sequence avoids the common trap."
+        ),
+    ]
+
+
+def _normalize_micro_explanations(raw: Any, fallback: list[str]) -> list[str]:
+    if isinstance(raw, str):
+        raw = [raw]
+    candidates = (
+        [str(item).strip() for item in raw if str(item).strip()]
+        if isinstance(raw, list)
+        else []
+    )
+    out: list[str] = []
+    for text in candidates[:2]:
+        trimmed = re.sub(r"\s+", " ", text).strip()
+        if len(trimmed) > 320:
+            trimmed = trimmed[:317].rstrip() + "..."
+        if trimmed:
+            out.append(trimmed)
+    if out:
+        return out
+    return [str(item).strip() for item in fallback if str(item).strip()][:2]
+
+
+def _fallback_quiz_for_card(topics: list[str], subtopics: list[str]) -> dict[str, Any]:
+    clean_topics = [str(t).strip() for t in topics if str(t).strip()]
+    main_topic = clean_topics[0] if clean_topics else "core concept"
+    paired_topic = clean_topics[1] if len(clean_topics) > 1 else main_topic
+    subtopic_hint = (
+        str(subtopics[0]).strip()
+        if subtopics and str(subtopics[0]).strip()
+        else f"the core logic of {main_topic}"
+    )
+    return {
+        "question": (
+            f"In a timed exam question mixing {main_topic} and {paired_topic}, "
+            "what is the strongest first move?"
+        ),
+        "options": [
+            f"Name {subtopic_hint}, then apply it step by step to the question.",
+            "Memorize a definition and skip the reasoning chain.",
+            "Jump to a final answer first, then justify it later.",
+            "Ignore the paired topic and solve with only one idea.",
+        ],
+        "correct_index": 0,
+        "explanation": (
+            "Strong answer. You start from the core concept and walk the reasoning chain, "
+            "which is what exam graders look for under pressure."
+        ),
+        "misconception": (
+            "This choice skips the reasoning path. Re-check which concept should anchor the first step, "
+            "then connect both topics in order."
+        ),
+        "focus_concept": main_topic,
+        "open_question": (
+            f"In 2-4 lines, explain how you would apply {main_topic} and {paired_topic} "
+            "step-by-step in a real exam question."
+        ),
+        "open_model_answer": (
+            f"Start from {main_topic}, state the governing idea, then connect it to {paired_topic} "
+            "with one concrete exam-relevant step. End with why this sequence prevents the common error."
+        ),
+    }
+
+
+def _normalize_quiz(
+    raw_quiz: Any, fallback_quiz: dict[str, Any], focus_topic: str
+) -> dict[str, Any]:
+    quiz = raw_quiz if isinstance(raw_quiz, dict) else {}
+    question = str(quiz.get("question", "")).strip() or str(
+        fallback_quiz.get("question", "")
+    ).strip()
+
+    raw_options = quiz.get("options", [])
+    if isinstance(raw_options, str):
+        raw_options = [raw_options]
+    options = (
+        [str(item).strip() for item in raw_options if str(item).strip()]
+        if isinstance(raw_options, list)
+        else []
+    )
+    if len(options) < 2:
+        fallback_options = fallback_quiz.get("options", [])
+        options = (
+            [str(item).strip() for item in fallback_options if str(item).strip()]
+            if isinstance(fallback_options, list)
+            else []
+        )
+    if len(options) < 2:
+        options = ["Re-check the concept mapping.", "Skip the mapping step."]
+
+    raw_correct = quiz.get("correct_index", quiz.get("correctIndex", 0))
+    try:
+        correct_index = int(raw_correct)
+    except Exception:
+        try:
+            correct_index = int(fallback_quiz.get("correct_index", 0))
+        except Exception:
+            correct_index = 0
+    correct_index = max(0, min(len(options) - 1, correct_index))
+
+    explanation = str(quiz.get("explanation", "")).strip() or str(
+        fallback_quiz.get("explanation", "")
+    ).strip()
+    misconception = str(quiz.get("misconception", "")).strip() or str(
+        fallback_quiz.get("misconception", "")
+    ).strip()
+    focus_concept = str(
+        quiz.get("focus_concept", quiz.get("focusConcept", ""))
+    ).strip() or str(fallback_quiz.get("focus_concept", "")).strip()
+    if not focus_concept:
+        focus_concept = focus_topic
+    open_question = str(
+        quiz.get("open_question", quiz.get("openQuestion", ""))
+    ).strip() or str(fallback_quiz.get("open_question", "")).strip()
+    open_model_answer = str(
+        quiz.get("open_model_answer", quiz.get("openModelAnswer", ""))
+    ).strip() or str(fallback_quiz.get("open_model_answer", "")).strip()
+
+    return {
+        "question": question or f"What is the first step for {focus_concept}?",
+        "options": options,
+        "correct_index": correct_index,
+        "explanation": explanation or "Good correction. Keep the reasoning chain explicit.",
+        "misconception": misconception
+        or "Re-check the concept bridge and try again.",
+        "focus_concept": focus_concept,
+        "open_question": open_question,
+        "open_model_answer": open_model_answer,
+    }
+
+
 def _fallback_story_card(topics: list[str], importance: str) -> dict[str, Any]:
     clean_topics = [str(t).strip() for t in topics if str(t).strip()]
     if not clean_topics:
@@ -527,12 +676,13 @@ def _fallback_story_card(topics: list[str], importance: str) -> dict[str, Any]:
     first = clean_topics[0]
     second = clean_topics[1] if len(clean_topics) > 1 else clean_topics[0]
     title = f"{first} and {second}: last-minute exam sync"
-
+    subtopics = [f"{first} + {second} exam card"]
+    micro_explanations = _fallback_micro_explanations(clean_topics[:2], subtopics)
     base_story = (
         f"You are one night away from the exam, and {first} plus {second} are waiting on your final revision map. "
         "You open your notes, draw a line between the two topics, and decide this is your mission for the next focused block: "
         "understand each idea, connect them in action, and speak the logic clearly enough to survive time pressure.\n\n"
-        f"You begin with {first}. You don't just memorize a definition; you build a scene around it. In your head, you walk through a question step by step, "
+        f"You begin with {first}. You do not just memorize a definition; you build a scene around it. In your head, you walk through a question step by step, "
         f"using {first} as the key move that unlocks the next line of reasoning. You catch yourself writing something vague, stop, and rewrite it as if the "
         "examiner is reading every word. The more precise your sentence gets, the more confident you feel.\n\n"
         f"Then you pivot to {second}. You imagine the question changing slightly and ask yourself what stays the same and what must change. "
@@ -545,19 +695,21 @@ def _fallback_story_card(topics: list[str], importance: str) -> dict[str, Any]:
     )
     story = _ensure_min_words(base_story, _story_min_words(importance), topic_label)
 
-    subtopics = [f"{first} core idea", f"{second} core idea", f"{first} <-> {second} exam linkage"]
     friend_explainers = [
         f"How would you explain {first} to a friend in 30 seconds with one example?",
         f"If a question mixes {first} and {second}, what clue tells you which idea to apply first?",
         "What is the most common mistake here, and how will you avoid it in the exam?",
     ]
+    quiz = _fallback_quiz_for_card(clean_topics[:2], subtopics)
     return {
         "title": title,
         "topics": clean_topics[:2],
         "importance": importance,
         "subtopics": subtopics,
         "story": story,
+        "micro_explanations": micro_explanations,
         "friend_explainers": friend_explainers,
+        "quiz": quiz,
     }
 
 
@@ -615,11 +767,19 @@ def _normalize_story_cards(
             if isinstance(raw_subtopics, list)
             else []
         )
+        subtopics = subtopics[:2]
         if not subtopics:
             subtopics = fallback.get("subtopics", [])
 
         story = str(raw.get("story", "")).strip() or str(fallback.get("story", "")).strip()
         story = _ensure_min_words(story, _story_min_words(importance), " + ".join(pair))
+        fallback_micro = fallback.get(
+            "micro_explanations", _fallback_micro_explanations(pair, subtopics)
+        )
+        micro_explanations = _normalize_micro_explanations(
+            raw.get("micro_explanations", raw.get("microExplanations", [])),
+            fallback_micro if isinstance(fallback_micro, list) else [],
+        )
 
         raw_friend = raw.get("friend_explainers", [])
         friend_explainers = (
@@ -629,6 +789,12 @@ def _normalize_story_cards(
         )
         if not friend_explainers:
             friend_explainers = fallback.get("friend_explainers", [])
+        fallback_quiz = fallback.get("quiz", _fallback_quiz_for_card(pair, subtopics))
+        quiz = _normalize_quiz(
+            raw.get("quiz", raw.get("topic_quiz", {})),
+            fallback_quiz if isinstance(fallback_quiz, dict) else {},
+            pair[0] if pair else "",
+        )
 
         normalized_cards.append(
             {
@@ -637,7 +803,9 @@ def _normalize_story_cards(
                 "importance": importance,
                 "subtopics": subtopics,
                 "story": story,
+                "micro_explanations": micro_explanations,
                 "friend_explainers": friend_explainers,
+                "quiz": quiz,
             }
         )
 
@@ -678,6 +846,11 @@ def _story_cards_to_checklist(story_cards: list[dict[str, Any]]) -> list[str]:
                 sub_text = str(sub).strip()
                 if sub_text:
                     items.append(f"{topic_label}: revise {sub_text} with one worked example.")
+        quiz = card.get("quiz", {})
+        if isinstance(quiz, dict):
+            question = str(quiz.get("question", "")).strip()
+            if question:
+                items.append(f"{topic_label}: answer checkpoint question and review your reasoning.")
         items.append(f"{topic_label}: explain the pair out loud in exam-ready language.")
     return items
 
@@ -704,23 +877,56 @@ def _compose_story_text(
         }.get(importance, "Priority")
         card_title = str(card.get("title", "")).strip() or f"{topic_label} story card"
 
-        subtopics = card.get("subtopics", [])
-        if not isinstance(subtopics, list):
-            subtopics = []
-        subtopic_text = "\n".join(f"- {str(sub).strip()}" for sub in subtopics if str(sub).strip()) or "- quick review"
+        micro = card.get("micro_explanations", [])
+        if isinstance(micro, list):
+            micro_text = [str(item).strip() for item in micro if str(item).strip()]
+        else:
+            micro_text = []
+        if not micro_text:
+            micro_text = [str(card.get("story", "")).strip()]
+        micro_block = "\n".join(
+            f"{exp_idx + 1}. {line}" for exp_idx, line in enumerate(micro_text[:2])
+        )
 
         friend = card.get("friend_explainers", [])
         if not isinstance(friend, list):
             friend = []
-        friend_text = "\n".join(f"- {str(item).strip()}" for item in friend if str(item).strip()) or "- explain this topic pair to a friend."
+        friend_text = (
+            "\n".join(f"- {str(item).strip()}" for item in friend if str(item).strip())
+            or "- explain this topic pair to a friend."
+        )
+        quiz = card.get("quiz", {})
+        quiz_text = ""
+        if isinstance(quiz, dict):
+            question = str(quiz.get("question", "")).strip()
+            options = quiz.get("options", [])
+            if isinstance(options, list):
+                clean_options = [str(opt).strip() for opt in options if str(opt).strip()]
+            else:
+                clean_options = []
+            if question and clean_options:
+                options_text = "\n".join(
+                    f"- Option {opt_idx + 1}: {opt}"
+                    for opt_idx, opt in enumerate(clean_options[:4])
+                )
+                quiz_text = (
+                    "\n\nCheckpoint quiz (mcq):\n"
+                    f"Question: {question}\n"
+                    f"Options:\n{options_text}"
+                )
+            open_question = str(
+                quiz.get("open_question", quiz.get("openQuestion", ""))
+            ).strip()
+            if open_question:
+                quiz_text += f"\nOpen answer: {open_question}"
 
         story = str(card.get("story", "")).strip()
         block = (
-            f"Story Card {idx + 1}: {card_title}\n"
-            f"Topics: {topic_label} ({importance_label})\n"
-            f"Subtopics:\n{subtopic_text}\n\n"
-            f"Story:\n{story}\n\n"
-            f"Friend-style explainers:\n{friend_text}"
+            f"Topic {idx + 1}: {card_title}\n"
+            f"Focus: {topic_label} ({importance_label})\n\n"
+            f"Flashcard explanations:\n{micro_block}\n\n"
+            f"Quick coaching prompts:\n{friend_text}"
+            f"{quiz_text}"
         )
         blocks.append(block.strip())
 
@@ -780,26 +986,27 @@ def generate_learning_event(state: PipelineState) -> PipelineState:
             "Return valid JSON only."
         ),
         user_prompt=(
-            "Task: build story cards for exam revision using topic PAIRS only.\n"
-            "Goal: combine two topics in each card and explain them like a friend helping before the exam.\n\n"
+            "Task: build story-driven scenario cards for exam revision using topic PAIRS only.\n"
+            "Goal: each card should feel like a focused exam-night scene (story first), then a checkpoint quiz.\n\n"
             "Hard constraints:\n"
             "1) Create exactly one story_card for each pair in TOPIC_PAIRS.\n"
             "2) topics in each story_card must be exactly the same as one given pair.\n"
             "3) importance must be one of: high, medium, low.\n"
-            "4) story must be at least 450 words per story_card.\n"
-            "5) Do NOT format any formal quiz (no MCQ, no answer key blocks).\n"
-            "6) Add friend_explainers as natural conversational prompts (2-4 lines), like friends teaching each other.\n"
-            "7) Keep output practical for exam preparation; avoid fluff.\n"
-            "8) checklist must be topic/subtopic-driven and exam actionable.\n\n"
-            "9) You must write in second-person protagonist style: the learner is always 'you'.\n"
-            "10) Each story must feel like a scene with progression (setup -> struggle -> breakthrough -> takeaway).\n"
-            "11) Avoid textbook voice. No generic lecture tone.\n\n"
+            "4) story must be substantial (at least 320 words) and align with the same concepts.\n"
+            "5) each story must show progression: setup -> struggle -> correction -> takeaway.\n"
+            "6) include micro_explanations with 2-4 short beats derived from the story (for slide rendering).\n"
+            "7) Include one checkpoint quiz in each story_card.\n"
+            "8) quiz must contain: question, options (3-4), correct_index, explanation, misconception, focus_concept, open_question, open_model_answer.\n"
+            "9) Add friend_explainers as natural conversational prompts (2-3 lines).\n"
+            "10) Keep output practical for exam prep and avoid fluff.\n"
+            "11) Do not invent extra topics or extra subtopics beyond provided concepts.\n"
+            "12) checklist must be concise and exam actionable.\n\n"
+            "13) Write in second-person voice (you/your).\n"
+            "14) Avoid textbook tone and avoid keyword dumping.\n\n"
             "Writing style:\n"
             "- energetic, clear, and focused\n"
-            "- cinematic but realistic exam-night tone\n"
-            "- second-person protagonist narration (you/your)\n"
-            "- concrete examples and reasoning steps\n"
-            "- no formal quiz language\n\n"
+            "- cinematic but practical exam-night delivery\n"
+            "- concrete examples and reasoning steps\n\n"
             "Return JSON with exact keys:\n"
             "{"
             "\"title\": str, "
@@ -810,8 +1017,19 @@ def generate_learning_event(state: PipelineState) -> PipelineState:
             "\"topics\": [str, ...], "
             "\"importance\": \"high\"|\"medium\"|\"low\", "
             "\"subtopics\": [str, ...], "
+            "\"micro_explanations\": [str, ...], "
             "\"story\": str, "
-            "\"friend_explainers\": [str, ...]"
+            "\"friend_explainers\": [str, ...], "
+            "\"quiz\": {"
+            "\"question\": str, "
+            "\"options\": [str, ...], "
+            "\"correct_index\": int, "
+            "\"explanation\": str, "
+            "\"misconception\": str, "
+            "\"focus_concept\": str, "
+            "\"open_question\": str, "
+            "\"open_model_answer\": str"
+            "}"
             "}, ..."
             "], "
             "\"subtopics\": [str, str, ...], "
@@ -1052,98 +1270,65 @@ def _generate_image(description: str) -> str | None:
 
 @traceable(run_type="chain", name="generate_story_visuals")
 def generate_story_visuals(state: PipelineState) -> PipelineState:
-    """Generate one image beat per topic storyline card so every topic gets visuals."""
+    """Generate a small number of visuals tied to explanation beats per topic card."""
     story = state.get("interactive_story", {})
     topic_cards = story.get("topic_storylines", []) if isinstance(story, dict) else []
     if not isinstance(topic_cards, list) or not topic_cards:
         return {**state, "story_beats": []}
 
-    source_text = state.get("cleaned_text", "")
+    raw_max = os.getenv("LASTMINUTE_MAX_VISUALS_PER_TOPIC", "").strip()
+    try:
+        max_visuals_per_topic = int(raw_max) if raw_max else 2
+    except Exception:
+        max_visuals_per_topic = 2
+    max_visuals_per_topic = max(0, min(4, max_visuals_per_topic))
+    if max_visuals_per_topic == 0:
+        return {**state, "story_beats": []}
 
-    # Build a topic list string for the LLM from actual card titles/topics
-    topic_descriptions: list[str] = []
+    beats: list[dict[str, Any]] = []
     for idx, card in enumerate(topic_cards):
         topics = card.get("topics", [])
-        title = str(card.get("title", "")).strip()
-        label = " + ".join(str(t).strip() for t in topics if str(t).strip()) if topics else title
-        topic_descriptions.append(f"Topic {idx + 1}: {label}")
-    topics_str = "\n".join(topic_descriptions)
+        label = (
+            " + ".join(str(t).strip() for t in topics if str(t).strip())
+            or str(card.get("title", f"Topic {idx + 1}")).strip()
+        )
 
-    result, _ = _llm_json(
-        system_prompt=(
-            "You are an educational visual designer. You create diagram prompts "
-            "for EVERY topic in a study guide.\n\n"
-            "STRICT RULES:\n"
-            "1. Create EXACTLY one beat per topic listed below. Every topic gets images.\n"
-            "2. The beat label must EXACTLY match the topic label given.\n"
-            "3. Each beat's narrative must use information from the source only.\n"
-            "4. For EACH beat, create exactly 2 image_steps — each step must "
-            "   describe a DIFFERENT visual (no repeated icons or labels):\n"
-            "     Step 1: one clear diagram (e.g. framework, definition, or overview)\n"
-            "     Step 2: a different diagram (e.g. process, comparison, or example)\n"
-            "5. Image prompts must be SPECIFIC, detailed, and unique per step.\n"
-            "6. Use exact terminology from the source text.\n\n"
-            "Return valid JSON only."
-        ),
-        user_prompt=(
-            "Create exactly one beat for EACH of these topics. Do NOT skip any topic.\n\n"
-            f"TOPICS:\n{topics_str}\n\n"
-            "For each beat provide:\n"
-            "  - label: EXACTLY the topic label from above (e.g. 'marketing + value')\n"
-            "  - narrative: 2-4 sentences (second-person) about this topic\n"
-            "  - image_steps: EXACTLY 2 objects with:\n"
-            "      - step_label: short label for the diagram\n"
-            "      - prompt: DETAILED description of what to draw (specific elements, "
-            "        layout, labels, distinct icons per concept)\n\n"
-            'Return JSON: {"beats": [{"label": "...", "narrative": "...", '
-            '"image_steps": [{"step_label": "...", "prompt": "..."}, '
-            '{"step_label": "...", "prompt": "..."}]}, ...]}\n\n'
-            f"SOURCE TEXT:\n{source_text[:8000]}"
-        ),
-    )
+        raw_micro = card.get("micro_explanations", [])
+        if isinstance(raw_micro, list):
+            micro = [str(item).strip() for item in raw_micro if str(item).strip()]
+        else:
+            micro = []
+        if not micro:
+            story_text = str(card.get("story", "")).strip()
+            parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", story_text) if p.strip()]
+            micro = parts[:2] if parts else [f"Core explanation for {label}."]
+        micro = micro[:max_visuals_per_topic]
 
-    beats_raw = result.get("beats", [])
-    if not isinstance(beats_raw, list):
-        beats_raw = []
-
-    # Build beats from LLM output, indexed by position
-    beats: list[dict[str, Any]] = []
-    for b in beats_raw:
-        raw_steps = b.get("image_steps", [])
         image_steps: list[dict[str, Any]] = []
-        for s in raw_steps[:2]:
-            image_steps.append({
-                "step_label": str(s.get("step_label", "")).strip(),
-                "prompt": str(s.get("prompt", "")).strip(),
-                "image_data": "",
-            })
-        while len(image_steps) < 2:
-            image_steps.append({"step_label": "", "prompt": "", "image_data": ""})
-        beats.append({
-            "label": str(b.get("label", "")).strip(),
-            "narrative": str(b.get("narrative", "")).strip(),
-            "is_decision": False,
-            "choices": [],
-            "image_steps": image_steps,
-        })
+        for exp_idx, explanation in enumerate(micro):
+            clean_explanation = re.sub(r"\s+", " ", explanation).strip()
+            prompt = (
+                f"Teach {label} with one concise educational visual. "
+                f"Support this explanation beat: {clean_explanation}. "
+                "Use a single clear frame, strong labels, and only essential elements."
+            )
+            image_steps.append(
+                {
+                    "step_label": f"Beat {exp_idx + 1}",
+                    "prompt": prompt,
+                    "image_data": "",
+                }
+            )
 
-    # If LLM returned fewer beats than topics, create placeholder beats for missing ones
-    if len(beats) < len(topic_cards):
-        existing_labels = {b["label"].lower() for b in beats}
-        for idx, card in enumerate(topic_cards):
-            topics = card.get("topics", [])
-            label = " + ".join(str(t).strip() for t in topics if str(t).strip()) or str(card.get("title", f"Topic {idx+1}")).strip()
-            if label.lower() not in existing_labels:
-                beats.append({
-                    "label": label,
-                    "narrative": "",
-                    "is_decision": False,
-                    "choices": [],
-                    "image_steps": [
-                        {"step_label": f"{label} overview", "prompt": f"Educational diagram showing the key components and relationships of {label}. Clear vector style, distinct labeled elements, no clutter.", "image_data": ""},
-                        {"step_label": f"{label} in practice", "prompt": f"Educational diagram showing how {label} works in practice with a concrete example. Crisp vector illustration with labeled steps.", "image_data": ""},
-                    ],
-                })
+        beats.append(
+            {
+                "label": label,
+                "narrative": "",
+                "is_decision": False,
+                "choices": [],
+                "image_steps": image_steps,
+            }
+        )
 
     # Generate images for all steps in parallel
     def _gen_step_image(beat_idx: int, step_idx: int, prompt_text: str) -> tuple[int, int, str | None]:
