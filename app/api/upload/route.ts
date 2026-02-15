@@ -7,6 +7,13 @@ import { spawn } from "child_process";
 
 export const runtime = "nodejs";
 
+/** One story beat with optional images for display between topics */
+export interface StoryBeat {
+  label: string;
+  narrative?: string;
+  image_steps: Array<{ step_label: string; prompt?: string; image_data: string }>;
+}
+
 interface LoaderResult {
   chars: number;
   preview: string;
@@ -17,13 +24,14 @@ interface LoaderResult {
   checklist: string[];
   interactiveStory: Record<string, unknown>;
   finalStorytelling: string;
+  storyBeats: StoryBeat[];
   llmUsed: boolean;
   llmStatus: string;
   pipelineTrace: Array<Record<string, unknown>>;
 }
 
 const UPLOAD_CACHE_DIR = path.join(process.cwd(), ".cache", "upload_results");
-const UPLOAD_CACHE_VERSION = "v2";
+const UPLOAD_CACHE_VERSION = "v5";
 const UPLOAD_CACHE_TTL_SECONDS = Number.parseInt(
   process.env.LASTMINUTE_UPLOAD_CACHE_TTL_SECONDS ?? "2592000",
   10
@@ -107,8 +115,75 @@ function parseLastJsonLine(stdout: string): Record<string, unknown> {
   throw new Error("Python loader did not return valid JSON output.");
 }
 
-async function resolvePythonCommand(): Promise<string> {
-  const venvPython = path.join(process.cwd(), ".venv", "bin", "python");
+function parseStoryBeats(raw: unknown): StoryBeat[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((b): b is Record<string, unknown> => !!b && typeof b === "object")
+    .map((b) => {
+      const steps = Array.isArray(b.image_steps)
+        ? (b.image_steps as Array<Record<string, unknown>>).map((s) => ({
+            step_label: String(s?.step_label ?? "").trim(),
+            prompt: typeof s?.prompt === "string" ? s.prompt.trim() : undefined,
+            image_data: String(s?.image_data ?? "").trim(),
+          }))
+        : [];
+      return {
+        label: String(b.label ?? "").trim(),
+        narrative: typeof b.narrative === "string" ? b.narrative.trim() : undefined,
+        image_steps: steps,
+      };
+    })
+    .filter((beat) => beat.label || beat.image_steps.some((s) => s.image_data));
+}
+
+function envSearchRoots(): string[] {
+  const cwd = process.cwd();
+  const roots = [cwd];
+  try {
+    const fromRoute = path.resolve(__dirname, "..", "..", "..");
+    if (fromRoute !== cwd) roots.push(fromRoute);
+  } catch {
+    // ignore
+  }
+  return roots;
+}
+
+async function readEnvFromDisk(): Promise<{
+  GEMINI_API_KEY?: string;
+  GOOGLE_API_KEY?: string;
+  LASTMINUTE_LLM_MODEL?: string;
+}> {
+  const out: Record<string, string> = {};
+  for (const root of envSearchRoots()) {
+    for (const filename of [".env.local", ".env"]) {
+      const filePath = path.join(root, filename);
+      try {
+        const raw = await fs.readFile(filePath, "utf-8");
+        for (const line of raw.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+          const eq = trimmed.indexOf("=");
+          let key = trimmed.slice(0, eq).trim();
+          if (key.startsWith("export ")) key = key.slice(7).trim();
+          if (!["GEMINI_API_KEY", "GOOGLE_API_KEY", "LASTMINUTE_LLM_MODEL"].includes(key)) continue;
+          let value = trimmed.slice(eq + 1).trim();
+          if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+            value = value.slice(1, -1);
+          else if (value.includes("#")) value = value.split("#")[0].trim();
+          if (value) out[key] = value;
+        }
+        if (out.GEMINI_API_KEY || out.GOOGLE_API_KEY) return out;
+      } catch {
+        // skip
+      }
+    }
+  }
+  return out;
+}
+
+async function resolvePythonCommand(root?: string): Promise<string> {
+  const base = root ?? process.cwd();
+  const venvPython = path.join(base, ".venv", "bin", "python");
   try {
     await fs.access(venvPython);
     return venvPython;
@@ -118,7 +193,6 @@ async function resolvePythonCommand(): Promise<string> {
 }
 
 async function loadWithPython(filePath: string): Promise<LoaderResult> {
-  const pythonCommand = await resolvePythonCommand();
   const script = `
 import json
 import os
@@ -137,6 +211,7 @@ try:
     llm_used = False
     llm_status = ""
     pipeline_trace = []
+    story_beats = []
     try:
         if debug_mode:
             from pipeline_graph import run_pipeline_with_trace
@@ -151,6 +226,9 @@ try:
         final_storytelling = pipeline_state.get("final_storytelling", "")
         llm_used = bool(pipeline_state.get("llm_used", False))
         llm_status = str(pipeline_state.get("llm_status", ""))
+        story_beats = pipeline_state.get("story_beats", [])
+        if not isinstance(story_beats, list):
+            story_beats = []
     except Exception:
         learning_event = {
             "title": "mission: general review",
@@ -180,6 +258,7 @@ Final Boss:
 Teach the chapter in simple words from memory."""
         llm_used = False
         llm_status = "pipeline import/exec failed"
+        story_beats = []
     # Cap at 100k chars so API response stays reasonable
     max_chars = 100000
     truncated = len(text) > max_chars
@@ -195,6 +274,7 @@ Teach the chapter in simple words from memory."""
         "checklist": checklist,
         "interactive_story": interactive_story,
         "final_storytelling": final_storytelling,
+        "story_beats": story_beats,
         "llm_used": llm_used,
         "llm_status": llm_status,
         "pipeline_trace": pipeline_trace
@@ -204,9 +284,38 @@ except Exception as error:
     sys.exit(1)
 `;
 
+  const env = { ...process.env };
+  let geminiKey =
+    process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
+  let llmModel = process.env.LASTMINUTE_LLM_MODEL?.trim();
+  if (!geminiKey || !llmModel) {
+    const fromFile = await readEnvFromDisk();
+    if (!geminiKey) geminiKey = fromFile.GEMINI_API_KEY?.trim() || fromFile.GOOGLE_API_KEY?.trim();
+    if (!llmModel) llmModel = fromFile.LASTMINUTE_LLM_MODEL?.trim();
+  }
+  if (geminiKey) {
+    env.GEMINI_API_KEY = geminiKey;
+    env.GOOGLE_API_KEY = geminiKey;
+  }
+  if (llmModel) env.LASTMINUTE_LLM_MODEL = llmModel;
+
+  let workDir = process.cwd();
+  for (const root of envSearchRoots()) {
+    try {
+      await fs.access(path.join(root, "pipeline_graph.py"));
+      workDir = root;
+      break;
+    } catch {
+      // not this root
+    }
+  }
+
+  const pythonCommand = await resolvePythonCommand(workDir);
+
   const result = await new Promise<LoaderResult>((resolve, reject) => {
     const child = spawn(pythonCommand, ["-c", script, filePath], {
-      cwd: process.cwd(),
+      cwd: workDir,
+      env,
     });
 
     let stdout = "";
@@ -244,6 +353,7 @@ except Exception as error:
               unknown
             >,
             finalStorytelling: String(payload.final_storytelling ?? ""),
+            storyBeats: parseStoryBeats(payload.story_beats),
             llmUsed: Boolean(payload.llm_used ?? false),
             llmStatus: String(payload.llm_status ?? ""),
             pipelineTrace: Array.isArray(payload.pipeline_trace)
@@ -291,6 +401,7 @@ export async function POST(request: Request) {
       checklist: cached.checklist,
       interactive_story: cached.interactiveStory,
       final_storytelling: cached.finalStorytelling,
+      story_beats: cached.storyBeats ?? [],
       llm_used: cached.llmUsed,
       llm_status: cached.llmStatus,
       pipeline_trace: cached.pipelineTrace,
@@ -318,6 +429,7 @@ export async function POST(request: Request) {
       checklist: result.checklist,
       interactive_story: result.interactiveStory,
       final_storytelling: result.finalStorytelling,
+      story_beats: result.storyBeats,
       llm_used: result.llmUsed,
       llm_status: result.llmStatus,
       pipeline_trace: result.pipelineTrace,

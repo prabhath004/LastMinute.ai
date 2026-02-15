@@ -15,6 +15,7 @@ import type {
   MisconceptionLogEntry,
   TopicStorylineCard,
 } from "@/types";
+import type { StoryBeat } from "@/app/api/upload/route";
 
 type LoadState = "loading" | "generating" | "ready" | "error";
 const RECENT_SESSIONS_KEY = "lastminute_recent_sessions";
@@ -44,6 +45,7 @@ export default function WorkspacePage() {
   const [topicStorylines, setTopicStorylines] = useState<TopicStorylineCard[]>(
     []
   );
+  const [storyBeats, setStoryBeats] = useState<StoryBeat[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [recentChats, setRecentChats] = useState<RecentSessionItem[]>([]);
 
@@ -186,6 +188,7 @@ export default function WorkspacePage() {
               .filter((item: TopicStorylineCard) => item.story.length > 0)
           : [];
         setTopicStorylines(cards);
+        setStoryBeats(Array.isArray(session.story_beats) ? session.story_beats : []);
         setActiveTopicId(cards[0] ? `story-${0}` : null);
         upsertRecentSession({
           id: currentSessionId,
@@ -425,6 +428,7 @@ export default function WorkspacePage() {
             missionTitle={storyTitle}
             missionStory={storytelling}
             topicStorylines={topicStorylines}
+            storyBeats={storyBeats}
             currentStoryIndex={currentStoryIndex}
             totalStories={topicStorylines.length}
             canGoPrevStory={canGoPrevStory}

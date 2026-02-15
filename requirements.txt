@@ -10,3 +10,4 @@ langgraph
 google-generativeai
 google-genai
 langsmith
+requests

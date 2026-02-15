@@ -167,8 +167,12 @@ export function VercelV0Chat() {
           r.data.final_storytelling.trim().length < 80
       );
       if (missingStorytelling) {
+        const status = missingStorytelling.data?.llm_status?.trim();
+        const hint = status
+          ? ` (${status})`
+          : ". Verify GEMINI_API_KEY in .env and try again.";
         setUploadError(
-          "Gemini storytelling is not ready yet for this upload. Verify `GEMINI_API_KEY` and try again."
+          `Gemini storytelling is not ready for this upload${hint}`
         );
         setIsUploading(false);
         return;

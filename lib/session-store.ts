@@ -7,6 +7,7 @@
 
 import { randomUUID } from "crypto";
 import type { TopicLesson, LessonSection, TopicStorylineCard } from "@/types";
+import type { StoryBeat } from "@/app/api/upload/route";
 
 export interface SessionData {
   id: string;
@@ -22,6 +23,8 @@ export interface SessionData {
     topic_storylines?: TopicStorylineCard[];
   };
   final_storytelling: string;
+  /** Story beats with optional images to show between topics */
+  story_beats: StoryBeat[];
   llm_used: boolean;
   llm_status: string;
   /** Full extracted source text — context for tutor + lesson generation */

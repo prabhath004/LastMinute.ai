@@ -2,7 +2,8 @@
 
 import { useRef, useEffect } from "react";
 import type { TopicStorylineCard } from "@/types";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import type { StoryBeat } from "@/app/api/upload/route";
+import { ChevronLeft, ChevronRight, Loader2, ImageIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface LessonViewProps {
@@ -10,6 +11,7 @@ interface LessonViewProps {
   missionTitle: string;
   missionStory: string;
   topicStorylines: TopicStorylineCard[];
+  storyBeats: StoryBeat[];
   currentStoryIndex: number;
   totalStories: number;
   canGoPrevStory: boolean;
@@ -19,11 +21,84 @@ interface LessonViewProps {
   loading: boolean;
 }
 
+/** Try to find beat images relevant to this topic card's concepts */
+function findBeatsForTopic(
+  card: TopicStorylineCard,
+  beats: StoryBeat[]
+): StoryBeat[] {
+  if (!beats || beats.length === 0) return [];
+  const topicLabels = [
+    ...card.topics.map((t) => t.toLowerCase().trim()),
+    ...card.subtopics.map((s) => s.toLowerCase().trim()),
+    card.title.toLowerCase().trim(),
+  ].filter(Boolean);
+
+  return beats.filter((beat) => {
+    const beatLabel = beat.label.toLowerCase().trim();
+    if (!beatLabel) return false;
+    return topicLabels.some(
+      (tl) => tl.includes(beatLabel) || beatLabel.includes(tl)
+    );
+  });
+}
+
+/** Render a single story beat with its images */
+function StoryBeatImages({ beat }: { beat: StoryBeat }) {
+  const images = beat.image_steps.filter((s) => s.image_data);
+  if (images.length === 0) return null;
+
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+          Visual — {beat.label}
+        </p>
+      </div>
+      {beat.narrative && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {beat.narrative}
+        </p>
+      )}
+      <div
+        className={cn(
+          "grid gap-3",
+          images.length === 1
+            ? "grid-cols-1"
+            : images.length === 2
+              ? "grid-cols-2"
+              : "grid-cols-1 sm:grid-cols-3"
+        )}
+      >
+        {images.map((step, idx) => (
+          <div
+            key={`${beat.label}-step-${idx}`}
+            className="overflow-hidden rounded-lg border border-border bg-muted/20"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={step.image_data}
+              alt={step.step_label || `${beat.label} diagram ${idx + 1}`}
+              className="h-auto w-full object-contain"
+            />
+            {step.step_label && (
+              <p className="border-t border-border bg-muted/30 px-2.5 py-1.5 text-[10px] text-muted-foreground">
+                {step.step_label}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function LessonView({
   activeTopicId,
   missionTitle,
   missionStory,
   topicStorylines,
+  storyBeats,
   currentStoryIndex,
   totalStories,
   canGoPrevStory,
@@ -79,9 +154,36 @@ export function LessonView({
     );
   }
 
+  // Pre-compute which beats go with which topic index, plus unmatched beats
+  const beatsByTopicIndex: Map<number, StoryBeat[]> = new Map();
+  const usedBeatLabels = new Set<string>();
+
+  topicStorylines.forEach((card, idx) => {
+    const matched = findBeatsForTopic(card, storyBeats);
+    if (matched.length > 0) {
+      beatsByTopicIndex.set(idx, matched);
+      matched.forEach((b) => usedBeatLabels.add(b.label));
+    }
+  });
+
+  // Any beats that didn't match a topic: distribute round-robin across topics
+  const unmatchedBeats = storyBeats.filter(
+    (b) => !usedBeatLabels.has(b.label) && b.image_steps.some((s) => s.image_data)
+  );
+  if (unmatchedBeats.length > 0 && topicStorylines.length > 0) {
+    unmatchedBeats.forEach((beat, i) => {
+      const idx = i % topicStorylines.length;
+      const existing = beatsByTopicIndex.get(idx) ?? [];
+      existing.push(beat);
+      beatsByTopicIndex.set(idx, existing);
+    });
+  }
+
+  const currentBeats = beatsByTopicIndex.get(currentStoryIndex) ?? [];
+
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-2xl px-6 py-8">
+      <div className="mx-auto max-w-6xl px-6 py-8">
         {topicStorylines.length > 0 ? (
           <section className="mb-8 space-y-4">
             <div className="rounded-lg border border-border bg-muted/30 p-5">
@@ -94,7 +196,7 @@ export function LessonView({
             </div>
             {topicStorylines
               .filter((_, idx) => idx === currentStoryIndex)
-              .map((card, idx) => {
+              .map((card) => {
               const absoluteIdx = currentStoryIndex;
               const importance = card.importance?.toLowerCase?.() ?? "medium";
               const importanceClass =
@@ -153,6 +255,18 @@ export function LessonView({
                   <p className="mt-4 whitespace-pre-line text-sm leading-relaxed text-foreground">
                     {card.story}
                   </p>
+
+                  {/* ---- Story beat images for this topic ---- */}
+                  {currentBeats.length > 0 && (
+                    <div className="mt-5 space-y-4 border-t border-border pt-4">
+                      {currentBeats.map((beat, beatIdx) => (
+                        <StoryBeatImages
+                          key={`beat-${beat.label}-${beatIdx}`}
+                          beat={beat}
+                        />
+                      ))}
+                    </div>
+                  )}
 
                   {card.friend_explainers && card.friend_explainers.length > 0 && (
                     <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">

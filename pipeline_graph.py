@@ -2,9 +2,11 @@ import json
 import os
 import re
 import hashlib
+import threading
 import time
 import math
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -15,6 +17,11 @@ try:
     import google.generativeai as genai
 except Exception:
     genai = None
+
+try:
+    import requests as _http
+except Exception:
+    _http = None
 
 try:
     from langsmith import traceable
@@ -38,6 +45,7 @@ class PipelineState(TypedDict):
     todo_checklist: list
     interactive_story: dict
     final_storytelling: str
+    story_beats: list
     llm_used: bool
     llm_status: str
 
@@ -924,6 +932,198 @@ def generate_learning_event(state: PipelineState) -> PipelineState:
     }
 
 
+def _get_api_key() -> str:
+    """Return the Gemini/Google API key from env or .env files."""
+    return (
+        _read_env_file_value("GEMINI_API_KEY")
+        or _read_env_file_value("GOOGLE_API_KEY")
+        or os.getenv("GEMINI_API_KEY", "").strip()
+        or os.getenv("GOOGLE_API_KEY", "").strip()
+    )
+
+
+_IMG_LOCK = threading.Lock()
+_IMG_LAST_CALL = 0.0
+_IMG_MIN_INTERVAL = 4.0
+_IMG_MAX_RETRIES = 4
+_IMG_BASE_BACKOFF = 5.0
+
+
+def _generate_image(description: str) -> str | None:
+    """Call Gemini image generation API with retry + rate limiting."""
+    global _IMG_LAST_CALL
+    api_key = _get_api_key()
+    if not api_key or _http is None:
+        return None
+
+    # Use LASTMINUTE_IMAGE_MODEL if set, otherwise derive from the text model.
+    # e.g. "gemini-2.5-flash" -> "gemini-2.5-flash-image" (the image-capable variant).
+    image_model = os.getenv("LASTMINUTE_IMAGE_MODEL", "").strip()
+    if not image_model:
+        base_model = (
+            os.getenv("LASTMINUTE_LLM_MODEL", "").strip()
+            or _read_env_file_value("LASTMINUTE_LLM_MODEL")
+        )
+        if not base_model:
+            return None
+        # If already ends with "-image", use as-is; otherwise append "-image"
+        image_model = base_model if base_model.endswith("-image") else f"{base_model}-image"
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{image_model}:generateContent?key={api_key}"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": (
+                            f"{description} "
+                            "Render as a single, high-clarity diagram: crisp lines, "
+                            "distinct elements, no blur. Each concept must have a "
+                            "unique visual — no repeated icons or duplicate labels. "
+                            "No placeholder or lorem ipsum text."
+                        )
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {"responseModalities": ["Text", "Image"]},
+    }
+    for attempt in range(_IMG_MAX_RETRIES):
+        with _IMG_LOCK:
+            now = time.monotonic()
+            wait = _IMG_MIN_INTERVAL - (now - _IMG_LAST_CALL)
+            if wait > 0:
+                time.sleep(wait)
+            _IMG_LAST_CALL = time.monotonic()
+        try:
+            resp = _http.post(url, json=payload, timeout=90)
+            if resp.status_code in (429, 500, 502, 503):
+                backoff = _IMG_BASE_BACKOFF * (2 ** attempt)
+                time.sleep(backoff)
+                continue
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", [])
+            for part in parts:
+                inline = part.get("inlineData")
+                if inline and inline.get("data"):
+                    mime = inline.get("mimeType", "image/png")
+                    return f"data:{mime};base64,{inline['data']}"
+            return None
+        except Exception:
+            if attempt < _IMG_MAX_RETRIES - 1:
+                time.sleep(_IMG_BASE_BACKOFF * (2 ** attempt))
+            continue
+    return None
+
+
+@traceable(run_type="chain", name="generate_story_visuals")
+def generate_story_visuals(state: PipelineState) -> PipelineState:
+    """Break the story into beats and generate up to 3 images per beat where needed."""
+    story_text = state.get("final_storytelling", "")
+    concepts = state.get("priority_concepts", [])
+    if not story_text:
+        return {**state, "story_beats": []}
+    concepts_str = ", ".join(concepts) if concepts else "the main topics"
+    source_text = state.get("cleaned_text", "")
+
+    result, _ = _llm_json(
+        system_prompt=(
+            "You are an educational visual designer. You decide where images "
+            "would genuinely help in the material — only create a beat when a "
+            "concept benefits from a diagram (e.g. framework, process, comparison).\n\n"
+            "STRICT RULES:\n"
+            "1. Create beats ONLY where a visual adds value. Skip concepts that "
+            "   are purely textual or don't need a diagram. Fewer, relevant "
+            "   images are better than many filler ones.\n"
+            "2. Each beat's narrative must contain ONLY information from the "
+            "   source. Use the EXACT terminology from the source.\n"
+            "3. The beat label must be the actual concept name.\n"
+            "4. For EACH beat you create, give exactly 3 image_steps — each step "
+            "   a DIFFERENT visual (no repeated icons or labels):\n"
+            "     Step 1: one clear diagram (e.g. framework or definition)\n"
+            "     Step 2: a different diagram (e.g. process or mechanism)\n"
+            "     Step 3: a different diagram (e.g. result or comparison)\n"
+            "5. Image prompts must be SPECIFIC and unique per step.\n\n"
+            "Return valid JSON only. The beats array may be empty or have 1 to "
+            "several items — only include beats where images are needed."
+        ),
+        user_prompt=(
+            "Decide where images are needed in this content. Create a beat only "
+            "for concepts that benefit from a diagram (e.g. the 4 Ps, a process "
+            "flow, a comparison). Do NOT create a fixed number of beats; use "
+            "as many or as few as needed (including zero).\n\n"
+            f"CONCEPTS: {concepts_str}\n\n"
+            "For each beat you create, provide:\n"
+            "  - label: the concept name\n"
+            "  - narrative: 2-5 sentences (second-person). Use exact terms from source.\n"
+            "  - is_decision: false\n"
+            "  - choices: []\n"
+            "  - image_steps: EXACTLY 3 objects with step_label and prompt (detailed diagram description).\n\n"
+            'Return JSON: {"beats": [{"label": "...", "narrative": "...", "is_decision": false, '
+            '"choices": [], "image_steps": [{"step_label": "Step 1: ...", "prompt": "..."}, ...]}, ...]}\n'
+            "Beats array: only include entries where a visual is needed.\n\n"
+            f"SOURCE:\n{source_text[:8000]}\n\n"
+            f"STORY (reference):\n{story_text[:4000]}"
+        ),
+    )
+    beats_raw = result.get("beats", [])
+    if not isinstance(beats_raw, list) or not beats_raw:
+        return {**state, "story_beats": []}
+
+    beats: list[dict[str, Any]] = []
+    for b in beats_raw[:10]:
+        raw_steps = b.get("image_steps", [])
+        image_steps: list[dict[str, Any]] = []
+        for s in raw_steps[:3]:
+            image_steps.append({
+                "step_label": str(s.get("step_label", "")).strip(),
+                "prompt": str(s.get("prompt", "")).strip(),
+                "image_data": "",
+            })
+        while len(image_steps) < 3:
+            image_steps.append({"step_label": "", "prompt": "", "image_data": ""})
+        beats.append({
+            "label": str(b.get("label", "")).strip(),
+            "narrative": str(b.get("narrative", "")).strip(),
+            "is_decision": bool(b.get("is_decision", False)),
+            "choices": [str(c).strip() for c in b.get("choices", []) if str(c).strip()],
+            "image_steps": image_steps,
+        })
+
+    def _gen_step_image(beat_idx: int, step_idx: int, prompt_text: str) -> tuple[int, int, str | None]:
+        if not prompt_text:
+            return beat_idx, step_idx, None
+        full_prompt = (
+            f"Create a single, clear educational diagram: {prompt_text}. "
+            "Style: crisp vector-style illustration, high clarity, bold shapes. "
+            "Each element must have a UNIQUE icon or shape. No placeholder text."
+        )
+        return beat_idx, step_idx, _generate_image(full_prompt)
+
+    jobs: list[tuple[int, int, str]] = []
+    for bi, beat in enumerate(beats):
+        for si, step in enumerate(beat["image_steps"]):
+            if step.get("prompt"):
+                jobs.append((bi, si, step["prompt"]))
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(_gen_step_image, bi, si, p) for bi, si, p in jobs]
+        for future in as_completed(futures):
+            try:
+                bi, si, img = future.result()
+                if img:
+                    beats[bi]["image_steps"][si]["image_data"] = img
+            except Exception:
+                pass
+    return {**state, "story_beats": beats}
+
+
 def build_graph():
     graph = StateGraph(PipelineState)
     graph.add_node("store_raw_files", store_raw_files)
@@ -935,6 +1135,7 @@ def build_graph():
     graph.add_node("estimate_priority", estimate_priority)
     graph.add_node("select_scenario_seed", select_scenario_seed)
     graph.add_node("generate_learning_event", generate_learning_event)
+    graph.add_node("generate_story_visuals", generate_story_visuals)
 
     graph.set_entry_point("store_raw_files")
     graph.add_edge("store_raw_files", "extract_text")
@@ -945,7 +1146,8 @@ def build_graph():
     graph.add_edge("normalize_concepts", "estimate_priority")
     graph.add_edge("estimate_priority", "select_scenario_seed")
     graph.add_edge("select_scenario_seed", "generate_learning_event")
-    graph.add_edge("generate_learning_event", END)
+    graph.add_edge("generate_learning_event", "generate_story_visuals")
+    graph.add_edge("generate_story_visuals", END)
     return graph.compile()
 
 
@@ -967,6 +1169,7 @@ def run_pipeline(raw_files: list, extracted_text: str = "") -> PipelineState:
         "todo_checklist": [],
         "interactive_story": {},
         "final_storytelling": "",
+        "story_beats": [],
         "llm_used": False,
         "llm_status": "",
     }
@@ -1005,6 +1208,7 @@ def run_pipeline_with_trace(
         "todo_checklist": [],
         "interactive_story": {},
         "final_storytelling": "",
+        "story_beats": [],
         "llm_used": False,
         "llm_status": "",
     }

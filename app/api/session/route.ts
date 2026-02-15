@@ -1,7 +1,28 @@
 import { NextResponse } from "next/server";
 import { createSession, getSession } from "@/lib/session-store";
+import type { StoryBeat } from "@/app/api/upload/route";
 
 export const runtime = "nodejs";
+
+function parseStoryBeatsFromBody(raw: unknown): StoryBeat[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((b): b is Record<string, unknown> => !!b && typeof b === "object")
+    .map((b) => {
+      const steps = Array.isArray(b.image_steps)
+        ? (b.image_steps as Array<Record<string, unknown>>).map((s) => ({
+            step_label: String(s?.step_label ?? "").trim(),
+            prompt: typeof s?.prompt === "string" ? s.prompt.trim() : undefined,
+            image_data: String(s?.image_data ?? "").trim(),
+          }))
+        : [];
+      return {
+        label: String(b.label ?? "").trim(),
+        narrative: typeof b.narrative === "string" ? b.narrative.trim() : undefined,
+        image_steps: steps,
+      };
+    });
+}
 
 /**
  * POST /api/session — create a new session from upload data
@@ -45,6 +66,7 @@ export async function POST(request: Request) {
         : [],
     },
     final_storytelling: body.final_storytelling ?? "",
+    story_beats: parseStoryBeatsFromBody(body.story_beats),
     llm_used: Boolean(body.llm_used),
     llm_status: body.llm_status ?? "",
     source_text: body.text ?? body.final_storytelling ?? "",
