@@ -34,11 +34,11 @@ export function SupportPanel({
 
   return (
     <div className="flex h-full flex-col border-l border-border">
-      {/* Scrollable top section */}
+      {/* Scrollable top section — shrinks when tutor is open */}
       <div
         className={cn(
-          "space-y-5 overflow-y-auto p-4",
-          tutorOpen ? "flex-none" : "flex-1"
+          "space-y-5 overflow-y-auto p-4 shrink-0",
+          tutorOpen ? "max-h-[40%]" : "flex-1"
         )}
       >
         {/* Progress summary */}
@@ -134,12 +134,14 @@ export function SupportPanel({
         )}
       </div>
 
-      {/* Tutor chat (takes remaining space) */}
-      <TutorChat
-        context={tutorContext}
-        open={tutorOpen}
-        onClose={() => setTutorOpen(false)}
-      />
+      {/* Tutor chat (takes remaining space, min-h-0 lets flex child scroll) */}
+      <div className={cn("min-h-0", tutorOpen ? "flex-1" : "hidden")}>
+        <TutorChat
+          context={tutorContext}
+          open={tutorOpen}
+          onClose={() => setTutorOpen(false)}
+        />
+      </div>
     </div>
   );
 }
