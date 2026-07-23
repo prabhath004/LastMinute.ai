@@ -61,6 +61,11 @@ The learning pipeline is implemented as a **LangGraph** agent in `pipeline_graph
 - **Integration:** The Next.js upload API (`app/api/upload/route.ts`) writes the uploaded file to a temp path, spawns Python, and runs either `run_pipeline` or `run_pipeline_with_trace` (when `LASTMINUTE_DEBUG_PIPELINE` is set). The pipeline output is returned as JSON (story_beats, concepts, checklist, etc.) and the front end stores it (e.g. in sessionStorage) and can redirect to the results page.
 
 ---
+---
+Architecure
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/ea5aa8ac-cf19-4954-973c-9dc8c9560094" />
+---
+
 
 ## Features
 
